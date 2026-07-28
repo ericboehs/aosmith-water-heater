@@ -16,10 +16,15 @@ two seconds.
 | Tank | A.O. Smith HPS10-50H45DV (Voltex hybrid) |
 | Adapter | Raspberry Pi Zero 2 W + Waveshare isolated RS-485 HAT |
 | Port | `/dev/serial0` → `ttyAMA0` (PL011), **19200 8N1** |
+| OS | Raspberry Pi OS Lite (64-bit), Debian 13 trixie, Python 3.13 |
 
 The Pi needs `enable_uart=1`, `dtoverlay=miniuart-bt` and `core_freq=250` in
 `/boot/firmware/config.txt` so the real PL011 lands on the GPIO header rather
 than the mini-UART.
+
+The EcoPort carries **one** differential pair — Data+ on pin 7, Data− on pin 1,
+signal ground on pin 8. The bus is half duplex in the wiring, not in software;
+no UART setting makes it otherwise.
 
 ## What works, and what does not
 
@@ -127,7 +132,20 @@ tools/tank-cli.py         manual status and demand-response control
 tools/probe.py            raw-wire diagnostic; prints every frame
 homeassistant/cards.py    Lovelace card definitions
 homeassistant/patch_dashboard.py   installs them via the websocket API
+ble/                      iCOMM Bluetooth LE protocol, recovered but blocked
 ```
+
+## The Bluetooth side
+
+CTA-2045 cannot read the leak sensor, cannot set the mode, and cannot set the
+setpoint. The tank's iCOMM module exposes all three over BLE, and its protocol
+was fully recovered by decompiling the app's Hermes bundle — framing, CRC-8,
+session handshake, register map.
+
+It does not work. The module accepts every frame at the ATT layer and never
+sends a notification back. `ble/` has the scripts, the register tables, and
+[a write-up of everything ruled out](ble/README.md), so the next attempt does
+not start from zero.
 
 ## Install
 
