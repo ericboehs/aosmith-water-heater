@@ -22,9 +22,37 @@ The Pi needs `enable_uart=1`, `dtoverlay=miniuart-bt` and `core_freq=250` in
 `/boot/firmware/config.txt` so the real PL011 lands on the GPIO header rather
 than the mini-UART.
 
-The EcoPort carries **one** differential pair — Data+ on pin 7, Data− on pin 1,
-signal ground on pin 8. The bus is half duplex in the wiring, not in software;
-no UART setting makes it otherwise.
+### ⚠️ There is 240 V in this connector
+
+This is the **AC form factor** of CTA-2045 — two 120 V hot legs share the port
+with the RS-485 pair, and there is no neutral. It is not the low-voltage SPI
+variant used in EPRI's Arduino simulator. Read this section before touching the
+port.
+
+**The rows are swapped relative to the spec diagram on this unit.** Top row is
+pins 7–12 left→right, bottom row is pins 1–6 left→right. Verify with a meter
+before trusting any harness or pinout drawing, including this one.
+
+| Row | | | | | | |
+|---|---|---|---|---|---|---|
+| **Top** | **Data+** (7) | Signal GND (8) | — | Earth GND (10) | — | **120 V L1** (12) |
+| **Bottom** | **Data−** (1) | — | — | — | **120 V L2** (5) | — |
+
+Only three wires are needed: **Data+ (7), Data− (1), Signal GND (8)**. Never
+touch pins 5 and 12.
+
+- **The connector's polarization key was dremeled off on this unit.** Mark the
+  port and the harness with a paint dot at the Data+ corner. One position of
+  slip puts 120 V onto the RS-485 pair.
+- **Use an isolated transceiver.** The data pins sit millimetres from 240 V and
+  signal ground is bonded to earth.
+- Healthy idle: Data+ 3.232 V, Data− 1.592 V, 1.640 V differential — a 3.3 V
+  transceiver with failsafe bias resistors.
+- **9.57 Ω across A+/B− with the board unpowered is normal** — substrate diodes
+  plus the TVS network, not a short. Powered, it reads `OL`.
+
+The port carries **one** differential pair, so the bus is half duplex in the
+wiring, not in software. No UART setting makes it otherwise.
 
 ## What works, and what does not
 
@@ -225,3 +253,32 @@ On a Pi Zero 2 W, disable Broadcom power save or expect ~20 % packet loss and
 [connection]
 wifi.powersave = 2
 ```
+
+Measured before and after on an otherwise strong link (−50 dBm, 60/70, no
+kernel errors): 20 % → 0 % loss, 77.8 ms → 14.5 ms average.
+
+## Prior art
+
+- [epri-dev/CTA-2045-UCM-CPP-Library](https://github.com/epri-dev/CTA-2045-UCM-CPP-Library)
+  — the reference implementation, and the bring-up stack here.
+- [epri-dev/CTA-2045-Desktop-Simulator](https://github.com/epri-dev/CTA-2045-Desktop-Simulator)
+  — the intermediate response-code table is in `Main_Form.Designer.vb`, and is
+  not in any free PDF.
+- [EPRI/OpenADR mapping guide](https://www.bpa.gov/-/media/Aep/energy-efficiency/emerging-technologies/ET-Documents/epri-report_openadr-2045-guidelines-may-2019-000000003002008854.pdf)
+  — source of the operational-state enumeration.
+
+The CTA-2045-B standard itself is paid, which is why several fields here are
+described by observed behaviour rather than by citation.
+
+## Caveats
+
+Everything here was worked out against **one** tank — an HPS10-50H45DV running
+device rev 2.14. Capability bitmaps and unimplemented commands vary by model
+and firmware, so treat the "not available" list as a finding about this unit
+rather than about A.O. Smith generally.
+
+The tank is not a metering device. Use a clamp meter for real power.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
