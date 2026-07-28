@@ -39,7 +39,7 @@ HEARTBEAT_INTERVAL = float(os.environ.get("CTA2045_HEARTBEAT_INTERVAL", "300"))
 EVENT_DURATION = float(os.environ.get("CTA2045_EVENT_DURATION", "1800"))
 EVENT_REISSUE = float(os.environ.get("CTA2045_EVENT_REISSUE", "600"))
 
-MQTT_HOST = os.environ.get("MQTT_HOST", "10.0.1.194")
+MQTT_HOST = os.environ.get("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 MQTT_USER = os.environ.get("MQTT_USER", "homeassistant")
 MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD")

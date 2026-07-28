@@ -6,6 +6,9 @@ does nothing until a restart. The websocket API is the only way to change it in
 place. Run with --dry-run to write the proposed config out without saving.
 
     HOME_ASSISTANT_TOKEN=... patch_dashboard.py [--dry-run]
+
+HA_URL and HA_DASHBOARD select the instance and the dashboard's url_path; the
+defaults are a stock install's ("lovelace" is the built-in Overview).
 """
 
 import asyncio
@@ -18,9 +21,9 @@ import websockets
 
 from cards import NEW_CARDS
 
-URL = os.environ.get("HA_URL", "ws://10.0.1.113:8123/api/websocket")
+URL = os.environ.get("HA_URL", "ws://homeassistant.local:8123/api/websocket")
 TOKEN = os.environ.get("HOME_ASSISTANT_TOKEN")
-DASHBOARD = "dashboard-solar"
+DASHBOARD = os.environ.get("HA_DASHBOARD", "lovelace")
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 VIEW_TITLE = "Climate"

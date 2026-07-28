@@ -424,7 +424,7 @@ def parse_device_info(frame):
 
     The struct is not fully mapped, so rather than guess at offsets this takes
     the printable ASCII runs, which come back as model then serial
-    ("HPS10-50H45DV", "134274434").
+    ("HPS10-50H45DV", then a nine-digit serial).
     """
     if frame is None:
         return {}
