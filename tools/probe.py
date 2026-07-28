@@ -5,8 +5,17 @@ Diagnostic tool: no MQTT, no daemon, just the wire. Pass --trace to see the
 raw byte chunks as well as the decoded frames.
 """
 
+import os
 import sys
 import time
+
+# Works from the repo (tools/ beside mqtt/) and from the flat layout the Pi
+# gets deployed into (tools/ beside the module itself).
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _candidate in (os.path.join(_HERE, "..", "mqtt"), os.path.join(_HERE, "..")):
+    if os.path.exists(os.path.join(_candidate, "cta2045.py")):
+        sys.path.insert(0, _candidate)
+        break
 
 import cta2045
 from cta2045 import Link, SerialPort
