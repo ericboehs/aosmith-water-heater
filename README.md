@@ -41,9 +41,15 @@ before trusting any harness or pinout drawing, including this one.
 Only three wires are needed: **Data+ (7), Data− (1), Signal GND (8)**. Never
 touch pins 5 and 12.
 
-- **The connector's polarization key was dremeled off on this unit.** Mark the
-  port and the harness with a paint dot at the Data+ corner. One position of
-  slip puts 120 V onto the RS-485 pair.
+- **The data pins and the hot legs are at opposite ends of the same rows.**
+  Data+ is the first position of its row and a 120 V leg is the last — four to
+  five positions apart, with blanks and ground in between. The two hot legs are
+  diagonal to each other and read 240 V across.
+- **The connector's polarization key was dremeled off on this unit.** A small
+  slip therefore lands on blanks or signal ground, but a **reversed insertion**
+  swaps the ends of both rows and brings a data conductor onto a hot leg. Mark
+  the port and the harness with a paint dot at the Data+ corner and check the
+  orientation every time.
 - **Use an isolated transceiver.** The data pins sit millimetres from 240 V and
   signal ground is bonded to earth.
 - Healthy idle: Data+ 3.232 V, Data− 1.592 V, 1.640 V differential — a 3.3 V
