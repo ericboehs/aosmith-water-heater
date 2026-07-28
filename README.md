@@ -4,16 +4,18 @@ Local monitoring and demand-response control of an A.O. Smith HPS10-50H45DV heat
 pump water heater over its CTA-2045 "EcoPort" (RS-485), published to Home
 Assistant via MQTT. No cloud account, no iCOMM dependency.
 
-The manufacturer's cloud API goes down often enough to be useless for
-automation, and its hot-water reading is quantised to 0 / 50 / 100 %. The tank's
-own port reports the same figure to a tenth of a percent and answers in about
-two seconds.
+The manufacturer's cloud API has been unreliable enough here to be unusable for
+automation — this site runs uptime monitors and a reload-on-recovery automation
+because of it — and its hot-water reading is quantised to 0 / 50 / 100 %. The
+tank's port instead supplies the two energy-take values needed to derive
+hot-water percentage to 0.1 %, and one complete status poll takes about two
+seconds.
 
 ## Hardware
 
 | Part | Detail |
 |---|---|
-| Tank | A.O. Smith HPS10-50H45DV (Voltex hybrid) |
+| Tank | A.O. Smith HPS10-50H45DV (Signature 900 hybrid) |
 | Adapter | Raspberry Pi Zero 2 W + Waveshare isolated RS-485 HAT |
 | Port | `/dev/serial0` → `ttyAMA0` (PL011), **19200 8N1** |
 | OS | Raspberry Pi OS Lite (64-bit), Debian 13 trixie, Python 3.13 |
@@ -65,8 +67,9 @@ wiring, not in software. No UART setting makes it otherwise.
 Read:
 
 - Hot water percentage, to 0.1 %
-- Operational state (13 states — idle/running × normal/curtailed/heightened, …)
-- Energy storage capacity and deficit, in Wh
+- Operational state (15 standard states — idle/running ×
+  normal/curtailed/heightened, price-stream states, …)
+- Total and present energy take capacity, in Wh
 - Lifetime cumulative energy
 - Setpoint (150 °F observed)
 - Model and serial number
@@ -80,33 +83,63 @@ Not available on this tank, despite being in the spec:
 
 - **Setpoint writes** return "not implemented".
 - **Present water temperature** is refused: link NAK reason 7, response code 6.
-- **Operating mode** (Hybrid / Electric / Heat Pump / Vacation) has no CTA-2045
-  command at all. It is front-panel only.
+- **Operating mode** (Hybrid / Electric / Heat Pump / Vacation) cannot be
+  changed over this tank's CTA-2045 port. CTA-2045-B does define a mode-related
+  SGD Efficiency Level command: this tank reports level 4, but every valid
+  write from level 0 through 10 returns "not implemented." The mapping from
+  level 4 to the front-panel mode is not published.
+
+Additional CTA-2045-B features found by the audit but not yet exposed by the
+daemon:
+
+- Energy-reduction User Preference reads as level 5.
+- Price Stream is supported, accepts up to 10 time/price pairs, and accepts the
+  standard "no valid prices" message.
+- UTC time, OTA metadata and a negotiated maximum payload of 256 bytes are
+  readable.
 
 Behavioural findings that are not in any datasheet:
 
-- **Reported power is a nameplate constant, not a measurement.** The tank
-  reports exactly 4500 W with the element energised and exactly 356 W on the
-  compressor, byte-identical across hundreds of polls. Treat it as a
-  categorical "what is running". For real power, use a clamp meter.
-- **Storage capacity moves with the operating mode** — 7275 Wh in Electric
-  against 4250 Wh in Hybrid — so the hot-water percentage must be computed from
-  the capacity and deficit of the *same* poll, never a cached capacity.
-- **Commodity code 7 is a deficit, not a level.** It rises as hot water is
-  drawn. Hot water % = `100 × (1 − deficit / capacity)`.
-- **Shed and Load Up are no-ops in Electric mode** — there is no compressor to
-  shift onto. In Hybrid, Load Up raises the target and keeps the compressor
-  running but never engages the resistive element, so it banks heat sooner
-  without drawing more power.
-- **The tank declares SGD Error about 14 minutes after the last comm-status
-  message, and that wipes any active event.** A heartbeat every 5 minutes is
-  mandatory, not optional.
+- **Reported power is an estimate, not a measurement.** The tank clears the
+  CTA-2045 "measured" bit and currently reports exactly 356 W while the
+  compressor runs. Earlier element-on observations reported 4500 W, matching
+  the two 4500 W elements in A.O. Smith's published specifications. Treat the
+  value as a categorical "what is running"; use a clamp meter for real power.
+- **Locally observed total energy-take capacity moved with the front-panel
+  operating mode** — 7275 Wh in Electric against 4250 Wh in Hybrid. Compute the
+  hot-water percentage from total and present take capacity in the *same* poll,
+  never from a cached capacity.
+- **Commodity code 7 is "present energy storage/take capacity": the energy the
+  tank can take now.** For this water heater it behaves like the energy needed
+  to become full, so the daemon calls it a deficit. Hot water %
+  = `100 × (1 − present_take / total_take)`.
+- **Earlier local tests found Shed and Load Up ineffective in Electric mode.**
+  In Hybrid, the tested Load Up runs used the compressor and increased stored
+  heat without an observed resistive-element transition. These are observations
+  of this firmware, not behavior guaranteed by CTA-2045.
+- **The tank declared SGD Error about 13½ minutes after the last comm-status
+  message in a controlled test.** Running Curtailed was still reported at
+  810.154 seconds; the first SGD Error response arrived at 811.704 seconds.
+  This masks the active event state but does not wipe the event: one heartbeat
+  restored Running Curtailed. A comm-status heartbeat every 5 minutes is
+  required by CTA-2045-B and avoids the error.
 
 ## Protocol notes
 
-Wire format is `msgType1, msgType2, length (2 bytes big endian), <length>
-payload bytes, 2-byte checksum`. Link ACK/NAK are the exception: bare two-byte
-messages (`06 00`, `15 <reason>`) with no length and no checksum.
+📄 **Read the standard — it is free.** CTA publishes the complete
+[ANSI/CTA-2045-B (February 2021, 158 pp)](https://cdn.cta.tech/cta/media/media/ansi-cta-2045-b-final-2022.pdf)
+on its own CDN, no account and no purchase. This project spent real effort
+inferring things that are stated normatively in that PDF — the operating-state
+codes (Table 10-3), the intermediate response codes (Table 11-2), and the
+electrical interface (Appendix B) among them. Everything below is a note on
+*this tank's* behaviour; the spec is the authority on what the protocol says.
+
+Wire format is `msgType1, msgType2, reserved (3 zero bits), payload length
+(13 bits, big endian), <length> payload bytes, 2-byte checksum`. Link ACK/NAK
+are the exception: bare two-byte messages (`06 00`, `15 <reason>`) with no
+length and no checksum. This tank ACKs the Basic (`08 01`), Intermediate
+(`08 02`) and Data-Link (`08 03`) message types and rejects the other standard
+message types tested with NAK reason 6.
 
 The checksum is a Fletcher over mod-255 sums seeded `0xAA`:
 
@@ -119,21 +152,28 @@ first  = 255 - ((sum1 + sum2) % 255)
 second = 255 - ((sum1 + first) % 255)
 ```
 
-Commodity responses are two op-code bytes, one lead byte, then **13-byte
+Commodity responses are two op-code bytes, a response-code byte, then **13-byte
 records**: commodity code (1) + instantaneous rate (6, big endian) + cumulative
-amount (6, big endian). Codes seen: `0x00` electricity, `0x06` storage
-capacity, `0x07` storage deficit; `0x0a`/`0x0b` mirror `0x06`/`0x07`.
+amount (6, big endian). The commodity byte's high bit says measured (1) or
+estimated (0); its low seven bits identify the commodity. Codes seen are
+`0x00` electricity consumed, `0x06` total energy storage/take capacity,
+`0x07` present energy storage/take capacity, `0x0a` Advanced Load Up total
+capacity and `0x0b` Advanced Load Up present capacity. The last two currently
+carry the same values as `0x06`/`0x07`, but their specified meanings differ.
 
-Event durations encode as `seconds = value² × 2`. Zero means indefinite, which
-this code deliberately never sends — an event that never expires outlives the
-daemon that set it.
+For duration bytes `0x01` through `0xfe`, event durations encode as
+`seconds = value² × 2`. The special value `0x00` means the duration is unknown,
+not indefinite; `0xff` means longer than the representable maximum. This code
+deliberately sends neither special value.
 
 ### Three things that cost real debugging time
 
 1. **The bus is half duplex.** Transmitting while the tank is mid-response
    collides with it and destroys the frame. Responses are collected in silence
-   and only acked once a complete frame is in hand — and the tank does not
-   require acks at all, so they are off by default.
+   and only acked once a complete frame is in hand. CTA-2045-B requires
+   responses to be ACKed; this tank has continued without them in long local
+   tests, so this implementation currently leaves response ACKs off by default
+   as a device-specific interoperability choice.
 2. **The port must be held exclusively.** A second process on the same tty
    silently steals bytes: the driver's `TIOCGICOUNT` shows hundreds received
    while your own `read()` returns nothing. Every symptom looks like a protocol
@@ -171,10 +211,10 @@ ble/                      iCOMM Bluetooth LE protocol, recovered but blocked
 
 ## The Bluetooth side
 
-CTA-2045 cannot read the leak sensor, cannot set the mode, and cannot set the
-setpoint. The tank's iCOMM module exposes all three over BLE, and its protocol
-was fully recovered by decompiling the app's Hermes bundle — framing, CRC-8,
-session handshake, register map.
+CTA-2045 has no leak-sensor readout, and this tank rejects both the setpoint
+write and the mode-related efficiency-level write. The iCOMM module exposes all
+three over BLE, and its protocol was fully recovered by decompiling the app's
+Hermes bundle — framing, CRC-8, session handshake, register map.
 
 It does not work. The module accepts every frame at the ATT layer and never
 sends a notification back. `ble/` has the scripts, the register tables, and
@@ -216,9 +256,9 @@ Ten entities arrive by MQTT discovery as a single device:
 |---|---|
 | `sensor.*_operational_state` | e.g. Running Heightened |
 | `sensor.*_hot_water` | % |
-| `sensor.*_energy_deficit` | Wh |
-| `sensor.*_storage_capacity` | Wh, mode dependent |
-| `sensor.*_nominal_power_draw` | nameplate, deliberately **not** `device_class: power` |
+| `sensor.*_energy_deficit` | Wh; CTA-2045 "present energy take capacity" |
+| `sensor.*_storage_capacity` | Wh; CTA-2045 "total energy take capacity" |
+| `sensor.*_nominal_power_draw` | estimated/categorical, deliberately **not** `device_class: power` |
 | `sensor.*_lifetime_energy` | kWh, `total_increasing` |
 | `sensor.*_setpoint` | °F, read only |
 | `binary_sensor.*_heating` | |
@@ -265,16 +305,18 @@ kernel errors): 20 % → 0 % loss, 77.8 ms → 14.5 ms average.
 
 ## Prior art
 
+- [ANSI/CTA-2045-B](https://cdn.cta.tech/cta/media/media/ansi-cta-2045-b-final-2022.pdf)
+  — the published protocol and electrical-interface specification.
 - [epri-dev/CTA-2045-UCM-CPP-Library](https://github.com/epri-dev/CTA-2045-UCM-CPP-Library)
-  — the reference implementation, and the bring-up stack here.
+  — EPRI's CTA-2045-A-era reference implementation, and the bring-up stack
+  here. It predates the revision-B efficiency-level, price-stream and Advanced
+  Load Up additions.
 - [epri-dev/CTA-2045-Desktop-Simulator](https://github.com/epri-dev/CTA-2045-Desktop-Simulator)
-  — the intermediate response-code table is in `Main_Form.Designer.vb`, and is
-  not in any free PDF.
+  — another useful implementation of the intermediate response-code table,
+  which is normative in CTA-2045-B Table 11-2.
 - [EPRI/OpenADR mapping guide](https://www.bpa.gov/-/media/Aep/energy-efficiency/emerging-technologies/ET-Documents/epri-report_openadr-2045-guidelines-may-2019-000000003002008854.pdf)
-  — source of the operational-state enumeration.
-
-The CTA-2045-B standard itself is paid, which is why several fields here are
-described by observed behaviour rather than by citation.
+  — additional integration guidance. The normative operational-state
+  enumeration is in CTA-2045-B itself.
 
 ## Caveats
 
