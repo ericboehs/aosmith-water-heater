@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+
+# Dashboard backups written by homeassistant/patch_dashboard.py; they are
+# snapshots of a live Home Assistant config, not source.
+dashboard-backup-*.json
+dashboard-proposed.json
+dashboard-ORIGINAL*.json

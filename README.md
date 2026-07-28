@@ -1,0 +1,202 @@
+# A.O. Smith heat pump water heater — local control over CTA-2045
+
+Local monitoring and demand-response control of an A.O. Smith HPS10-50H45DV heat
+pump water heater over its CTA-2045 "EcoPort" (RS-485), published to Home
+Assistant via MQTT. No cloud account, no iCOMM dependency.
+
+The manufacturer's cloud API goes down often enough to be useless for
+automation, and its hot-water reading is quantised to 0 / 50 / 100 %. The tank's
+own port reports the same figure to a tenth of a percent and answers in about
+two seconds.
+
+## Hardware
+
+| Part | Detail |
+|---|---|
+| Tank | A.O. Smith HPS10-50H45DV (Voltex hybrid) |
+| Adapter | Raspberry Pi Zero 2 W + Waveshare isolated RS-485 HAT |
+| Port | `/dev/serial0` → `ttyAMA0` (PL011), **19200 8N1** |
+
+The Pi needs `enable_uart=1`, `dtoverlay=miniuart-bt` and `core_freq=250` in
+`/boot/firmware/config.txt` so the real PL011 lands on the GPIO header rather
+than the mini-UART.
+
+## What works, and what does not
+
+Read:
+
+- Hot water percentage, to 0.1 %
+- Operational state (13 states — idle/running × normal/curtailed/heightened, …)
+- Energy storage capacity and deficit, in Wh
+- Lifetime cumulative energy
+- Setpoint (150 °F observed)
+- Model and serial number
+
+Write:
+
+- Shed, End Shed, Load Up, Critical Peak, Grid Emergency — all accepted and
+  reflected in the operational state
+
+Not available on this tank, despite being in the spec:
+
+- **Setpoint writes** return "not implemented".
+- **Present water temperature** is refused: link NAK reason 7, response code 6.
+- **Operating mode** (Hybrid / Electric / Heat Pump / Vacation) has no CTA-2045
+  command at all. It is front-panel only.
+
+Behavioural findings that are not in any datasheet:
+
+- **Reported power is a nameplate constant, not a measurement.** The tank
+  reports exactly 4500 W with the element energised and exactly 356 W on the
+  compressor, byte-identical across hundreds of polls. Treat it as a
+  categorical "what is running". For real power, use a clamp meter.
+- **Storage capacity moves with the operating mode** — 7275 Wh in Electric
+  against 4250 Wh in Hybrid — so the hot-water percentage must be computed from
+  the capacity and deficit of the *same* poll, never a cached capacity.
+- **Commodity code 7 is a deficit, not a level.** It rises as hot water is
+  drawn. Hot water % = `100 × (1 − deficit / capacity)`.
+- **Shed and Load Up are no-ops in Electric mode** — there is no compressor to
+  shift onto. In Hybrid, Load Up raises the target and keeps the compressor
+  running but never engages the resistive element, so it banks heat sooner
+  without drawing more power.
+- **The tank declares SGD Error about 14 minutes after the last comm-status
+  message, and that wipes any active event.** A heartbeat every 5 minutes is
+  mandatory, not optional.
+
+## Protocol notes
+
+Wire format is `msgType1, msgType2, length (2 bytes big endian), <length>
+payload bytes, 2-byte checksum`. Link ACK/NAK are the exception: bare two-byte
+messages (`06 00`, `15 <reason>`) with no length and no checksum.
+
+The checksum is a Fletcher over mod-255 sums seeded `0xAA`:
+
+```python
+sum1, sum2 = 0xAA, 0x00
+for byte in data:
+    sum1 = (sum1 + byte) % 0xFF
+    sum2 = (sum2 + sum1) % 0xFF
+first  = 255 - ((sum1 + sum2) % 255)
+second = 255 - ((sum1 + first) % 255)
+```
+
+Commodity responses are two op-code bytes, one lead byte, then **13-byte
+records**: commodity code (1) + instantaneous rate (6, big endian) + cumulative
+amount (6, big endian). Codes seen: `0x00` electricity, `0x06` storage
+capacity, `0x07` storage deficit; `0x0a`/`0x0b` mirror `0x06`/`0x07`.
+
+Event durations encode as `seconds = value² × 2`. Zero means indefinite, which
+this code deliberately never sends — an event that never expires outlives the
+daemon that set it.
+
+### Three things that cost real debugging time
+
+1. **The bus is half duplex.** Transmitting while the tank is mid-response
+   collides with it and destroys the frame. Responses are collected in silence
+   and only acked once a complete frame is in hand — and the tank does not
+   require acks at all, so they are off by default.
+2. **The port must be held exclusively.** A second process on the same tty
+   silently steals bytes: the driver's `TIOCGICOUNT` shows hundreds received
+   while your own `read()` returns nothing. Every symptom looks like a protocol
+   bug. `SerialPort` takes an `flock`, so a stale reader is a startup error
+   rather than a mystery.
+3. **The tank retransmits responses it thinks went unheard.** Bytes still in
+   flight when the next request goes out get read as that request's answer, and
+   consecutive polls drift permanently out of step. `Link.request` drains for
+   400 ms after each exchange.
+
+EPRI's `libcea2045` was tried first and abandoned. It fails a request outright
+when the link ack and the response arrive in the same read, drops the response
+bytes, and — because it only acks frames it parsed successfully — leaves the
+tank retransmitting into a stream that never recovers.
+
+## Layout
+
+```
+mqtt/cta2045.py           protocol: framing, checksum, parsing, Tank helpers
+mqtt/cta2045_mqtt.py      the daemon: poll → MQTT with HA discovery
+systemd/cta2045-mqtt.service
+tools/tank-cli.py         manual status and demand-response control
+tools/probe.py            raw-wire diagnostic; prints every frame
+homeassistant/cards.py    Lovelace card definitions
+homeassistant/patch_dashboard.py   installs them via the websocket API
+```
+
+## Install
+
+```bash
+sudo apt install python3-paho-mqtt
+mkdir -p ~/cta2045-mqtt
+cp mqtt/cta2045.py mqtt/cta2045_mqtt.py ~/cta2045-mqtt/
+
+# Credentials, root owned, mode 0600 — never in the repo.
+sudo install -m 0600 /dev/null /etc/cta2045-mqtt.env
+sudo tee /etc/cta2045-mqtt.env >/dev/null <<'EOF'
+MQTT_HOST=...
+MQTT_USER=...
+MQTT_PASSWORD=...
+EOF
+
+sudo cp systemd/cta2045-mqtt.service /etc/systemd/system/
+sudo systemctl enable --now cta2045-mqtt
+```
+
+Everything else is environment driven: `CTA2045_PORT` (`/dev/serial0`),
+`CTA2045_POLL_INTERVAL` (30 s), `CTA2045_HEARTBEAT_INTERVAL` (300 s),
+`CTA2045_EVENT_DURATION` (1800 s), `CTA2045_EVENT_REISSUE` (600 s),
+`MQTT_PORT`, `MQTT_TOPIC_BASE`, `MQTT_DISCOVERY_PREFIX`, `MQTT_NODE_ID`.
+
+The daemon refuses to start without `MQTT_PASSWORD` rather than connecting
+anonymously.
+
+## Home Assistant
+
+Ten entities arrive by MQTT discovery as a single device:
+
+| Entity | Notes |
+|---|---|
+| `sensor.*_operational_state` | e.g. Running Heightened |
+| `sensor.*_hot_water` | % |
+| `sensor.*_energy_deficit` | Wh |
+| `sensor.*_storage_capacity` | Wh, mode dependent |
+| `sensor.*_nominal_power_draw` | nameplate, deliberately **not** `device_class: power` |
+| `sensor.*_lifetime_energy` | kWh, `total_increasing` |
+| `sensor.*_setpoint` | °F, read only |
+| `binary_sensor.*_heating` | |
+| `binary_sensor.*_sgd_error` | tank lost the RS-485 link |
+| `select.*_demand_response` | Normal / Shed / Load Up / Critical Peak / Grid Emergency |
+
+The select is the only writable control, because it is the only thing the tank
+actually lets you change.
+
+Commands are applied on the polling thread — the link is half duplex and not
+reentrant — but an incoming command cuts the poll sleep short, so a change in
+Home Assistant reaches the tank in about a second.
+
+On startup the daemon reads the operational state and **adopts** any event
+already running, so a restart or reboot no longer silently cancels it. The tank
+reports the effect rather than the command, so Curtailed is adopted as Shed and
+Heightened as Load Up.
+
+## Manual control
+
+```bash
+tools/tank-cli.py status
+tools/tank-cli.py watch 30 20
+tools/tank-cli.py loadup 45
+tools/tank-cli.py normal
+```
+
+These take the same lock as the daemon, so running one while the service is up
+fails loudly instead of stealing its bytes. Stop the service first.
+
+## Wi-Fi
+
+On a Pi Zero 2 W, disable Broadcom power save or expect ~20 % packet loss and
+300 ms latency spikes on an otherwise strong link:
+
+```
+# /etc/NetworkManager/conf.d/wifi-powersave-off.conf
+[connection]
+wifi.powersave = 2
+```

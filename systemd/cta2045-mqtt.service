@@ -1,0 +1,29 @@
+[Unit]
+Description=CTA-2045 water heater to MQTT bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ericboehs
+# Serial port access.
+SupplementaryGroups=dialout
+
+# Credentials live here, outside the repo, root owned and mode 0600.
+EnvironmentFile=/etc/cta2045-mqtt.env
+
+ExecStart=/usr/bin/python3 /home/ericboehs/cta2045-mqtt/cta2045_mqtt.py
+
+Restart=always
+RestartSec=10
+
+# The tank tolerates a gap of about 14 minutes before declaring SGD Error, so
+# a wedged process needs to be replaced well inside that.
+WatchdogSec=0
+TimeoutStopSec=20
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
