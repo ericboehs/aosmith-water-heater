@@ -450,6 +450,20 @@ These are not included in the README-only proposed diff:
 8. Decide explicitly whether to become CTA-conforming by ACKing complete
    application responses after bus turnaround.
 
+Items 1–6 were fixed in `1bcc277`. Item 7 landed with the Price Stream work,
+which went further than a read helper: the daemon now sends forecasts, and the
+tank acts on them. Item 8 is still undecided — the tank has never punished the
+omission, so nothing forces the question yet.
+
+Two follow-on findings from implementing item 7, both established against the
+hardware rather than read off the spec:
+
+- The tank weighs each price **against the rest of the forecast**, not against
+  any absolute threshold. A uniformly expensive forecast provokes nothing.
+- §11.8.3.3 invalidation marks the stored forecast stale; it does **not** clear
+  it. An invalidate left the tank curtailed on the prices it already had. A
+  flat forecast is the way to stand it down.
+
 [cta-b]: https://cdn.cta.tech/cta/media/media/ansi-cta-2045-b-final-2022.pdf
 [epri]: https://github.com/epri-dev/CTA-2045-UCM-CPP-Library/tree/dbaffc88624efdfe15260e1efb5ebf2e4afdb24c
 [epri-checksum]: https://github.com/epri-dev/CTA-2045-UCM-CPP-Library/blob/dbaffc88624efdfe15260e1efb5ebf2e4afdb24c/cea2045/cea2045/util/Checksum.cpp

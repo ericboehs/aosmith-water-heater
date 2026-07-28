@@ -48,9 +48,17 @@ TOPIC_BASE = os.environ.get("MQTT_TOPIC_BASE", "cta2045/waterheater")
 DISCOVERY_PREFIX = os.environ.get("MQTT_DISCOVERY_PREFIX", "homeassistant")
 NODE_ID = os.environ.get("MQTT_NODE_ID", "aosmith_hpwh")
 
+# The forecast lives in the tank, but the tank offers no way to read it back
+# (section 11.8.4's "export" is about selling prices, not readback). Without a
+# local copy, a restart would see the price-driven Heightened state, mistake it
+# for an event, and re-issue a real Load Up on top of it forever.
+PRICE_STATE_FILE = os.environ.get("CTA2045_PRICE_STATE",
+                                  "/var/lib/cta2045-mqtt/prices.json")
+
 STATE_TOPIC = f"{TOPIC_BASE}/state"
 AVAILABILITY_TOPIC = f"{TOPIC_BASE}/availability"
 COMMAND_TOPIC = f"{TOPIC_BASE}/demand_response/set"
+PRICE_TOPIC = f"{TOPIC_BASE}/price_stream/set"
 
 # Each mode maps to the Tank method that starts it. "Normal" ends whatever is
 # running; the others are timed events this daemon keeps alive.
@@ -72,6 +80,14 @@ ADOPTED_MODES = {
     3: "Load Up",       # Running Heightened
     6: "Load Up",       # Idle Heightened
 }
+
+# A live price forecast drives the tank into those same Curtailed and
+# Heightened states on its own. Adopting one as a daemon event would issue a
+# real Shed on top of it and then re-issue that Shed forever, so the tank would
+# stay curtailed after the expensive window passed. While a forecast is live,
+# adoption is skipped and the states are reported as price-driven instead.
+PRICE_DRIVEN_STATES = {2: "Curtailed", 4: "Curtailed",
+                       3: "Heightened", 6: "Heightened"}
 
 
 def log(message):
@@ -132,8 +148,15 @@ def discovery_entities():
         sensor("lifetime_energy", "Lifetime Energy", unit="kWh",
                device_class="energy", state_class="total_increasing"),
         sensor("setpoint", "Setpoint", unit="°F", device_class="temperature"),
+        # Not device_class "monetary": that one wants a bare ISO 4217 unit and
+        # a total state class, which a per-kWh rate is not.
+        sensor("price_now", "Current Price", unit="USD/kWh",
+               icon="mdi:currency-usd"),
+        sensor("price_response", "Price Response", icon="mdi:chart-line"),
         binary_sensor("heating", "Heating", device_class="heat"),
         binary_sensor("sgd_error", "SGD Error", device_class="problem"),
+        binary_sensor("price_stream_active", "Price Stream Active",
+                      icon="mdi:transmission-tower-export"),
     ]
     select_config = {
         "name": "Demand Response",
@@ -161,6 +184,19 @@ class Daemon:
         self.last_heartbeat = 0.0
         self.last_event = 0.0
         self.running = True
+        # The forecast currently loaded into the tank, as (unix_time, price)
+        # sorted ascending, plus the scale needed to read those prices back.
+        self.price_pairs = []
+        self.price_digits = 5
+        self.pending_prices = None
+        # Section 11.8.3 requires negotiating this before any Price Stream
+        # message. 2 is the standard's floor for a tank that refuses to say,
+        # which is small enough that no forecast will fit -- exactly the
+        # intended outcome, since sending one anyway could overflow it.
+        self.max_payload = 2
+        # Replaced at startup by whatever the tank says it will store. Two is
+        # the fewest that can describe a price changing at all.
+        self.max_pairs = 2
         # Lets an incoming command cut the poll sleep short. Commands are still
         # executed on the polling thread -- the serial link is half duplex and
         # not reentrant -- but they no longer wait out the full interval.
@@ -184,16 +220,53 @@ class Daemon:
     def on_connect(self, client, userdata, flags, reason_code, properties=None):
         log(f"mqtt connected ({reason_code})")
         client.subscribe(COMMAND_TOPIC)
+        client.subscribe(PRICE_TOPIC)
         self.publish_discovery()
         client.publish(AVAILABILITY_TOPIC, "online", retain=True)
 
     def on_message(self, client, userdata, message):
-        requested = message.payload.decode().strip()
-        if requested not in DR_MODES:
-            log(f"ignoring unknown demand response mode {requested!r}")
+        payload = message.payload.decode().strip()
+        if message.topic == PRICE_TOPIC:
+            self.queue_prices(payload)
+            return
+        if payload not in DR_MODES:
+            log(f"ignoring unknown demand response mode {payload!r}")
             return
         # Applied on the polling thread; the serial link is not reentrant.
-        self.pending_mode = requested
+        self.pending_mode = payload
+        self.wake.set()
+
+    def queue_prices(self, payload):
+        """Accept a forecast off MQTT and hand it to the polling thread.
+
+        Two shapes are taken: a bare list of [unix_time, price] pairs, or an
+        object with "pairs" plus optional "currency" and "digits". The literal
+        string "invalidate" sends the section 11.8.3.3 no-valid-prices message.
+
+        Parsing happens here so a malformed forecast is rejected against the
+        publisher rather than surfacing later as a serial-layer error.
+        """
+        if payload.lower() == "invalidate":
+            self.pending_prices = "invalidate"
+            self.wake.set()
+            return
+        try:
+            parsed = json.loads(payload)
+            body = {"pairs": parsed} if isinstance(parsed, list) else parsed
+            if not isinstance(body, dict):
+                raise TypeError("expected a list of pairs or an object")
+            pairs = sorted((int(t), int(p)) for t, p in body["pairs"])
+            if not pairs:
+                raise ValueError("empty forecast")
+            request = {
+                "pairs": pairs,
+                "currency": int(body.get("currency", cta2045.CURRENCY_USD)),
+                "digits": int(body.get("digits", 5)),
+            }
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
+            log(f"rejecting price stream: {error}")
+            return
+        self.pending_prices = request
         self.wake.set()
 
     def publish_discovery(self):
@@ -225,6 +298,114 @@ class Daemon:
             log(f"tank refused demand response mode {mode}")
         return accepted
 
+    def apply_prices(self, request):
+        """Push a forecast to the tank, or invalidate the stored one.
+
+        The tank judges each price against the rest of the forecast rather
+        than against any absolute threshold -- a uniformly expensive forecast
+        provokes no reaction at all -- so what matters is the shape, and a
+        flat forecast is the way to say "no opinion".
+        """
+        if request == "invalidate":
+            code = self.tank.invalidate_prices()
+            if code == 0:
+                self.price_pairs = []
+                self.save_prices()
+                log("price stream invalidated")
+            else:
+                log(f"tank refused price invalidation: {code}")
+            return
+
+        # This tank stores only ten pairs, far fewer than a full day of a
+        # time-of-use schedule. Publishers may send the whole day; the pairs
+        # nearest in time are the ones the tank can still act on, so the tail
+        # is dropped and the forecast is re-sent as the day advances.
+        pairs = request["pairs"]
+        if len(pairs) > self.max_pairs:
+            # Start at the pair in effect right now, not at the head of the
+            # list: a schedule published for the whole day begins at midnight,
+            # and the elapsed hours would otherwise crowd out the future.
+            now = time.time()
+            start = 0
+            for index, (when, _) in enumerate(pairs):
+                if when <= now:
+                    start = index
+            pairs = pairs[start:start + self.max_pairs]
+            log(f"forecast of {len(request['pairs'])} pairs trimmed to the "
+                f"{len(pairs)} from now on, all this tank will hold")
+
+        try:
+            code = self.tank.set_price_stream(
+                pairs, currency=request["currency"],
+                digits=request["digits"], max_payload=self.max_payload)
+        except ValueError as error:
+            log(f"price stream rejected: {error}")
+            return
+        if code == 0:
+            # Deliberately the trimmed list: this is what the tank is acting
+            # on, so it is what price_now() should report and what a restart
+            # should restore. Keeping the untrimmed forecast here would claim
+            # a live price for hours after the tank's copy ran out.
+            self.price_pairs = pairs
+            self.price_digits = request["digits"]
+            self.save_prices()
+            log(f"price stream -> {len(pairs)} pairs, through "
+                f"{time.strftime('%H:%M', time.localtime(pairs[-1][0]))}")
+        else:
+            log("tank refused price stream: "
+                f"{cta2045.INTERMEDIATE_RESPONSES.get(code, code)}")
+
+    def save_prices(self):
+        try:
+            os.makedirs(os.path.dirname(PRICE_STATE_FILE), exist_ok=True)
+            with open(PRICE_STATE_FILE, "w") as handle:
+                json.dump({"pairs": self.price_pairs,
+                           "digits": self.price_digits}, handle)
+        except OSError as error:
+            log(f"could not save the forecast: {error}")
+
+    def load_prices(self):
+        """Restore the forecast this process last sent the tank.
+
+        A forecast whose last pair has passed is not restored -- price_now()
+        would ignore it anyway, and dropping it here keeps a stale file from
+        reading as a live forecast.
+        """
+        try:
+            with open(PRICE_STATE_FILE) as handle:
+                saved = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return
+        pairs = [(int(t), int(p)) for t, p in saved.get("pairs", [])]
+        if not pairs or time.time() > pairs[-1][0]:
+            return
+        self.price_pairs = pairs
+        self.price_digits = int(saved.get("digits", 5))
+        log(f"restored a forecast of {len(pairs)} pairs, through "
+            f"{time.strftime('%H:%M', time.localtime(pairs[-1][0]))}")
+
+    def price_now(self):
+        """The forecast price in effect right now, or None if none is live.
+
+        The forecast expires at its last pair: past that the tank is acting on
+        a price nobody has refreshed, so this reports nothing rather than
+        pretending the final price still holds.
+        """
+        if not self.price_pairs:
+            return None
+        now = time.time()
+        if now > self.price_pairs[-1][0]:
+            return None
+        current = None
+        for when, price in self.price_pairs:
+            if when <= now:
+                current = price
+            else:
+                break
+        if current is None:
+            return None
+        return round(current / (10 ** self.price_digits), 5)
+
     def adopt_mode(self):
         """Take over an event that was already running before this process.
 
@@ -234,6 +415,10 @@ class Daemon:
         because the tank never reports how much of its own timer is left.
         """
         state = self.tank.operational_state()
+        if state and self.price_now() is not None:
+            log(f"leaving {state[1]} alone; a price forecast is driving it")
+            self.mode = "Normal"
+            return
         mode = ADOPTED_MODES.get(state[0]) if state else None
         if mode is None:
             self.apply_mode("Normal")
@@ -250,6 +435,10 @@ class Daemon:
             else:
                 log("heartbeat not acknowledged")
 
+        if self.pending_prices is not None:
+            request, self.pending_prices = self.pending_prices, None
+            self.apply_prices(request)
+
         if self.pending_mode is not None:
             mode, self.pending_mode = self.pending_mode, None
             self.apply_mode(mode)
@@ -259,13 +448,27 @@ class Daemon:
         state = self.tank.operational_state()
         records = self.tank.commodity()
 
-        payload = {"demand_response": self.mode}
+        price = self.price_now()
+        payload = {
+            "demand_response": self.mode,
+            "price_stream_active": "ON" if price is not None else "OFF",
+        }
+        if price is not None:
+            payload["price_now"] = price
 
         if state:
             code, name = state
             payload["operational_state"] = name
             payload["heating"] = str(code in cta2045.HEATING_STATES).lower()
             payload["sgd_error"] = str(code == 5).lower()
+            # The tank never says *why* it curtailed. Attributing these states
+            # to price only while a forecast is live and this daemon is not
+            # itself running an event is the closest honest answer.
+            if price is not None and self.mode == "Normal":
+                payload["price_response"] = PRICE_DRIVEN_STATES.get(
+                    code, "Following")
+            else:
+                payload["price_response"] = "Inactive"
 
         if records:
             rate, cumulative = records.get(cta2045.COMMODITY_ELECTRICITY, (0, 0))
@@ -296,6 +499,24 @@ class Daemon:
         self.device = self.tank.device_info()
         log(f"tank: {self.device.get('model', 'unknown')} "
             f"serial {self.device.get('serial', 'unknown')}")
+
+        # Section 9 requires this before any intermediate message, and a
+        # forecast is chunked to fit it. Left at the floor if the tank will not
+        # answer, which makes set_price_stream refuse rather than guess.
+        negotiated = self.tank.max_payload()
+        if negotiated:
+            self.max_payload = negotiated
+            log(f"max payload {negotiated} bytes "
+                f"({(negotiated - 7) // 8} price pairs per message)")
+        else:
+            log("tank would not negotiate a max payload; price stream disabled")
+
+        accepted = self.tank.accepted_pairs()
+        if accepted and accepted["max_pairs"]:
+            self.max_pairs = accepted["max_pairs"]
+            log(f"tank stores {self.max_pairs} price pairs")
+
+        self.load_prices()
 
         # Heartbeat first: a tank sitting in SGD Error reports that instead of
         # whatever event is running, which would make adoption read it wrong.

@@ -12,6 +12,10 @@ SupplementaryGroups=dialout
 # Credentials live here, outside the repo, root owned and mode 0600.
 EnvironmentFile=/etc/cta2045-mqtt.env
 
+# systemd creates /var/lib/cta2045-mqtt owned by User=, which is where the
+# daemon remembers the price forecast it last sent the tank.
+StateDirectory=cta2045-mqtt
+
 ExecStart=/usr/bin/python3 /home/ericboehs/cta2045-mqtt/cta2045_mqtt.py
 
 Restart=always

@@ -78,6 +78,8 @@ Write:
 
 - Shed, End Shed, Load Up, Critical Peak, Grid Emergency — all accepted and
   reflected in the operational state
+- **Price Stream** — a forecast of time/price pairs the tank acts on by itself
+  (see below)
 
 Not available on this tank, despite being in the spec:
 
@@ -93,10 +95,7 @@ Additional CTA-2045-B features found by the audit but not yet exposed by the
 daemon:
 
 - Energy-reduction User Preference reads as level 5.
-- Price Stream is supported, accepts up to 10 time/price pairs, and accepts the
-  standard "no valid prices" message.
-- UTC time, OTA metadata and a negotiated maximum payload of 256 bytes are
-  readable.
+- UTC time and OTA metadata are readable.
 
 Behavioural findings that are not in any datasheet:
 
@@ -117,6 +116,31 @@ Behavioural findings that are not in any datasheet:
   In Hybrid, the tested Load Up runs used the compressor and increased stored
   heat without an observed resistive-element transition. These are observations
   of this firmware, not behavior guaranteed by CTA-2045.
+- **Basic Load Up cannot heat past the setpoint.** This is normative, not a
+  quirk: §11.6 says basic Load Up "can only bring the water heater to set
+  point," and only *Advanced* Load Up raises storage temperature above it.
+  Advanced Load Up is gated behind capability bit 6, which this tank leaves
+  clear; the spec conditions it on an ASSE 1017 thermostatic mixing valve
+  being fitted, because without one the outlet can scald. So a Load Up that
+  runs long and then stops has not hit some undocumented plateau — it filled
+  the tank to setpoint.
+- **The tank judges price relative to the forecast, not against a threshold.**
+  Established by A/B test with the tank reset to a flat price and allowed to
+  settle between phases:
+
+  | Forecast | Result |
+  |---|---|
+  | cheap now, dear in 3 h | Running **Heightened** — heats while it is cheap |
+  | dear now, cheap in 3 h | Running **Curtailed** — waits for the cheap window |
+  | uniformly dear ($0.99/kWh flat) | **no reaction at all** |
+
+  That last row is the informative one. An absolute threshold would have
+  curtailed on a flat $0.99; nothing happened. Only the *shape* matters, so a
+  flat forecast is how you say "no opinion", and the numbers can be real
+  cents/kWh or an arbitrary normalized signal — the tank cannot tell.
+- **It reacts within about 4 seconds**, and via the ordinary Curtailed and
+  Heightened states rather than the dedicated "Running Price Stream" (13) and
+  "Idle Price Stream" (14) codes, which were never observed.
 - **The tank declared SGD Error about 13½ minutes after the last comm-status
   message in a controlled test.** Running Curtailed was still reported at
   810.154 seconds; the first SGD Error response arrived at 811.704 seconds.
@@ -204,6 +228,8 @@ mqtt/cta2045_mqtt.py      the daemon: poll → MQTT with HA discovery
 systemd/cta2045-mqtt.service
 tools/tank-cli.py         manual status and demand-response control
 tools/probe.py            raw-wire diagnostic; prints every frame
+tools/price-stream-probe.py         does the tank act on prices, or just accept them?
+tools/price-stream-characterize.py  A/B test: relative shape vs absolute threshold
 homeassistant/cards.py    Lovelace card definitions
 homeassistant/patch_dashboard.py   installs them via the websocket API
 ble/                      iCOMM Bluetooth LE protocol, recovered but blocked
@@ -250,7 +276,7 @@ anonymously.
 
 ## Home Assistant
 
-Ten entities arrive by MQTT discovery as a single device:
+Thirteen entities arrive by MQTT discovery as a single device:
 
 | Entity | Notes |
 |---|---|
@@ -264,9 +290,48 @@ Ten entities arrive by MQTT discovery as a single device:
 | `binary_sensor.*_heating` | |
 | `binary_sensor.*_sgd_error` | tank lost the RS-485 link |
 | `select.*_demand_response` | Normal / Shed / Load Up / Critical Peak / Grid Emergency |
+| `sensor.*_current_price` | USD/kWh in effect now, from the live forecast |
+| `sensor.*_price_response` | Heightened / Curtailed / Following / Inactive |
+| `binary_sensor.*_price_stream_active` | a forecast is live and unexpired |
 
-The select is the only writable control, because it is the only thing the tank
-actually lets you change.
+The select is the only writable *entity*; the other way in is the price topic
+below.
+
+`price_response` is the daemon's reading of *why* the tank is in the state it
+is in. The tank never says, so this only attributes Curtailed and Heightened to
+price while a forecast is live **and** the daemon is not itself running an
+event — otherwise it reports `Inactive`.
+
+### Price Stream
+
+Publish a forecast to `cta2045/waterheater/price_stream/set`, either as a bare
+list of `[unix_time, price]` pairs or as an object:
+
+```jsonc
+{"pairs": [[1785243600, 14000], [1785265200, 28000]],
+ "digits": 5,        // price is scaled by 10^digits, so 14000 = $0.14000
+ "currency": 840}    // ISO 4217, USD
+```
+
+Publishing the literal string `invalidate` sends the §11.8.3.3 "no valid
+prices" message. Note that this marks the stored forecast **stale rather than
+deleting it** — the tank keeps acting on the shape it has. To actually stand
+the tank down, send a *flat* forecast.
+
+Two limits are negotiated with the tank at startup rather than assumed: the
+maximum payload (256 bytes here, so 31 pairs per message) and how many pairs it
+will store — **ten** on this tank. A longer schedule is trimmed to the ten
+starting from the price in effect now, so publishing a whole day's rates works;
+just re-publish periodically so the window slides forward. The daemon logs the
+trim and reports `price_now` from the trimmed set, since that is what the tank
+is actually holding.
+
+The forecast is also written to `/var/lib/cta2045-mqtt/prices.json`. That is
+not a cache: the tank has no way to read a stored forecast back (§11.8.4's
+"export" is about selling prices), so without a local copy a restart would find
+the tank Heightened, mistake price-driven behavior for an event, and issue a
+real Load Up on top of it — then re-issue that forever. With the copy, the
+daemon recognises the forecast and leaves the tank alone.
 
 Commands are applied on the polling thread — the link is half duplex and not
 reentrant — but an incoming command cuts the poll sleep short, so a change in
@@ -275,7 +340,8 @@ Home Assistant reaches the tank in about a second.
 On startup the daemon reads the operational state and **adopts** any event
 already running, so a restart or reboot no longer silently cancels it. The tank
 reports the effect rather than the command, so Curtailed is adopted as Shed and
-Heightened as Load Up.
+Heightened as Load Up — unless a price forecast is live, which produces those
+same states on its own and must not be adopted.
 
 ## Manual control
 

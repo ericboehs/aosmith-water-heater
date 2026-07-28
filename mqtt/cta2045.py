@@ -61,10 +61,25 @@ OP_LOAD_UP = 0x17
 OP_INFO = 0x01
 OP_GET_SET = 0x03
 OP_COMMODITY = 0x06
+OP_PRICE_STREAM = 0x0D
 
 SUB_TEMP_OFFSET = 0x02
 SUB_TEMP_SETPOINT = 0x03
 SUB_PRESENT_TEMPERATURE = 0x04
+
+# Price Stream sub-opcodes, CTA-2045-B section 11.8.
+SUB_STATIC_TARIFF = 0x00
+SUB_ACCEPTED_PAIRS = 0x01
+SUB_SET_PRICE_STREAM = 0x02
+SUB_EXPORT_PRICE_STREAM = 0x03
+
+# Data-link op codes, Table 9-2.
+OP_QUERY_MAX_PAYLOAD = 0x18
+OP_MAX_PAYLOAD = 0x19
+
+# Max Payload Length Indicator, Table 9-2. Index is the reply's opcode 2.
+MAX_PAYLOAD_SIZES = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 1280, 1500,
+                     2048, 4096]
 
 REPLY_BIT = 0x80
 
@@ -76,6 +91,20 @@ NAK_REASONS = {
     0x05: "message timeout",
     0x06: "unsupported message type",
     0x07: "request not supported",
+}
+
+# Intermediate application response codes, Table 11-2. Distinct from the
+# link-layer NAK reasons above: these arrive in a complete application frame.
+INTERMEDIATE_RESPONSES = {
+    0x00: "success",
+    0x01: "command not implemented",
+    0x02: "bad value",
+    0x03: "command length error",
+    0x04: "response length error",
+    0x05: "busy",
+    0x06: "other error",
+    0x07: "override",
+    0x08: "not enabled",
 }
 
 OPERATIONAL_STATES = {
@@ -172,6 +201,93 @@ def decode_duration(value):
     if value in (0x00, 0xFF):
         return None
     return value * value * 2
+
+
+# Price Stream times are seconds since 2000-01-01T00:00:00Z, not the Unix
+# epoch. Leap seconds are already folded into the UTC value, so this is a
+# plain constant offset.
+CTA_EPOCH = 946684800
+
+CURRENCY_USD = 840
+
+# Currency, digits, pair count, message index, first time, first price: the
+# mandatory block of SetPriceStream. All zeros is the section 11.8.3.3
+# "no valid prices" message, which is the one safe thing to send blind -- it
+# tells the tank the stored forecast may be stale without asserting a price.
+PRICE_INVALIDATE = bytes(13)
+
+
+def price_stream_payloads(pairs, currency=CURRENCY_USD, digits=5,
+                          max_payload=256):
+    """Split (unix_time, price) pairs into SetPriceStream payload chunks.
+
+    `price` is the integer value already scaled by `digits`, so 0.23882 $/kWh
+    at digits=5 is 23882. Times are Unix seconds and get rebased onto the CTA
+    epoch here.
+
+    The spec requires negotiating Maximum Payload Length before sending any of
+    this, so `max_payload` is a real bound rather than decoration: each chunk
+    is 7 bytes of header plus 8 per pair, and chunks carry an increasing
+    Message Index while every chunk repeats the same total pair count. The
+    tank reassembles once it has that many pairs with no gap in the indices.
+    """
+    if not pairs:
+        raise ValueError("no price pairs; use PRICE_INVALIDATE to say 'unknown'")
+    per_chunk = (max_payload - 7) // 8
+    if per_chunk < 1:
+        raise ValueError(
+            f"max payload {max_payload} has no room for a price pair; "
+            "negotiate Maximum Payload Length first")
+    chunks = [pairs[i:i + per_chunk] for i in range(0, len(pairs), per_chunk)]
+    payloads = []
+    for index, chunk in enumerate(chunks):
+        body = bytearray([(currency >> 8) & 0xFF, currency & 0xFF,
+                          digits, len(pairs), index])
+        for when, price in chunk:
+            stamp = int(when) - CTA_EPOCH
+            if not 0 <= stamp <= 0xFFFFFFFF:
+                raise ValueError(f"{when} is outside the CTA epoch's range")
+            if not 0 <= price <= 0xFFFFFFFF:
+                raise ValueError(f"price {price} does not fit in 32 bits")
+            body += stamp.to_bytes(4, "big") + price.to_bytes(4, "big")
+        payloads.append(bytes(body))
+    return payloads
+
+
+def parse_accepted_pairs(frame):
+    """Return {"max_pairs": n, "export_supported": bool|None}, or None.
+
+    Export Price Supported is optional and this tank omits it, which per
+    section 11.8.2.2 means the same thing as false -- but None is kept
+    distinct from False so a caller can tell "said no" from "did not say".
+    """
+    if frame is None or len(frame.payload) < 4:
+        return None
+    if frame.payload[2] != 0x00:
+        return None
+    export = frame.payload[4] == 0x01 if len(frame.payload) > 4 else None
+    return {"max_pairs": frame.payload[3], "export_supported": export}
+
+
+def parse_max_payload(frame):
+    """Bytes the tank will accept in one payload, from a Table 9-2 reply."""
+    if frame is None or frame.is_link or frame.op_code1 != OP_MAX_PAYLOAD:
+        return None
+    indicator = frame.op_code2
+    if indicator >= len(MAX_PAYLOAD_SIZES):
+        return None
+    return MAX_PAYLOAD_SIZES[indicator]
+
+
+def intermediate_response(frame, op_code1):
+    """Response code from an intermediate reply, or None if it is not one."""
+    if frame is None or frame.is_link or len(frame.payload) < 3:
+        return None
+    if frame.payload[0] != op_code1:
+        return None
+    if not frame.payload[1] & REPLY_BIT:
+        return None
+    return frame.payload[2]
 
 
 class ProtocolError(Exception):
@@ -565,6 +681,62 @@ class Tank:
 
     def grid_emergency(self, seconds):
         return self._command(basic(OP_GRID_EMERGENCY, encode_duration(seconds)))
+
+    def max_payload(self):
+        """Bytes the tank accepts in one payload. 256 on this unit.
+
+        A link NAK here means the tank only supports the 2-byte default, per
+        Table 9-2, which would rule out Price Stream entirely.
+        """
+        return parse_max_payload(
+            self.link.request(build(MSG_TYPE_DATALINK,
+                                    [OP_QUERY_MAX_PAYLOAD, 0x00])))
+
+    def accepted_pairs(self):
+        """How many time+price pairs the tank takes per sequence. 10 here.
+
+        Optional per section 11.8.2, and when it is missing the spec's default
+        is 8 -- so None from here means "assume 8", not "no Price Stream".
+        """
+        return parse_accepted_pairs(
+            self.link.request(intermediate(OP_PRICE_STREAM,
+                                           SUB_ACCEPTED_PAIRS)))
+
+    def set_price_stream(self, pairs, currency=CURRENCY_USD, digits=5,
+                         max_payload=256):
+        """Send a price forecast. Returns the last response code, or None.
+
+        Pairs are (unix_time, scaled_price), and section 11.8.3.1 wants the
+        first time of message index 0 at or before now -- that is what tells
+        the tank to drop the previous sequence rather than merge into it.
+
+        Sending stops at the first non-success response so a rejected chunk
+        does not leave the tank assembling a sequence it will never complete.
+        """
+        code = None
+        for payload in price_stream_payloads(pairs, currency, digits,
+                                             max_payload):
+            code = intermediate_response(
+                self.link.request(
+                    intermediate(OP_PRICE_STREAM, SUB_SET_PRICE_STREAM,
+                                 payload)),
+                OP_PRICE_STREAM)
+            if code != 0x00:
+                break
+        return code
+
+    def invalidate_prices(self):
+        """Tell the tank the stored forecast may be stale (section 11.8.3.3).
+
+        The all-zero mandatory block. Worth sending when the daemon loses its
+        price source, so the tank stops trusting a forecast nobody is
+        refreshing.
+        """
+        return intermediate_response(
+            self.link.request(
+                intermediate(OP_PRICE_STREAM, SUB_SET_PRICE_STREAM,
+                             PRICE_INVALIDATE)),
+            OP_PRICE_STREAM)
 
     def _command(self, frame):
         """True when the tank application-acked, rather than merely link-acked."""
