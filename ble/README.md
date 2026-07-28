@@ -5,10 +5,12 @@ control but cannot read the leak sensor, cannot report tank fullness directly,
 and cannot set the mode or setpoint. The iCOMM module's BLE interface can do
 all four — the app does exactly that.
 
-**Status: the protocol is fully recovered, and the module answers nothing.**
-Every frame is accepted at the ATT layer and no notification ever comes back.
-These scripts are the record of getting that far, kept so the next attempt does
-not start from zero.
+**Status: authenticated, and the module still answers nothing.** The PIN is
+verified correct by A/B against a wrong one, and an authenticated link now
+stays up for minutes instead of being dropped at ~15 s — but every frame on
+the `6940` pipe is accepted at the ATT layer and no notification ever comes
+back. These scripts are the record of getting that far, kept so the next
+attempt does not start from zero.
 
 What is deliberately **not** here: the APK and its 31 MB decompile. Those are
 A.O. Smith's. Register names, offsets and framing are interoperability facts
@@ -16,12 +18,24 @@ and are published in full below.
 
 ## Getting the module to advertise
 
-Hold **WiFi** until the light goes out, then hold **Bluetooth** until it
-flashes green.
+This module is the **Bluetooth-button** variant: from lights-off, press the
+Bluetooth button **once**; it beeps and the light starts flashing. Hold that
+button 3 s to leave pairing mode early.
+
+**Pairing mode expires by itself after 10 minutes**, and the module stops
+advertising when it does — budget experiments accordingly, and re-enter pairing
+mode rather than assuming a stale window is still open. It also goes quiet for
+a while after rejecting a PIN.
 
 ⚠️ This **turns the tank's WiFi off**, which takes the cloud integration
-offline until you turn it back on. It may also matter more than that — see
-"Why it is blocked".
+offline until you turn it back on.
+
+⚠️ The other module variant, with a **function button**, uses *press twice* for
+pairing — and on that one a double-press from the *flashing green* state arms a
+**factory reset** instead (a 5 s hold then commits it, clearing TOU schedules,
+demand-response schedules and Wi-Fi profiles). Same gesture, different outcome
+depending on the LED you start from. Not this module, but worth knowing before
+following generic A.O. Smith instructions.
 
 ## The GATT map
 
@@ -54,8 +68,9 @@ From `com.aosmith.icomm` → React Native **Hermes bytecode** bundle
 functions), decompiled with [P1sec/hermes-dec](https://github.com/P1sec/hermes-dec).
 All the logic is JavaScript; `jadx` on the dex files is not needed.
 
-Only the `6940xxxx` service is referenced by the app. `7F51xxxx` never appears
-— likely nRF DFU.
+Only the `6940xxxx` service is referenced by the app; `7F51xxxx` never appears
+in the bundle or the APK. It was assumed to be nRF DFU — **wrong**, it is a
+live ASCII console. See "Why it is blocked".
 
 ### Framing
 
@@ -108,14 +123,24 @@ assetID, ASCII → hex; `00` ×18 marks an empty slot. ACK codes (`ACKTable`):
 After the session the app sends `setEssentialParams()` — `remoteEnable()` to
 block 13/9 and `setClock()` to 26/3+4, in parallel.
 
-⚠️ **The app transmits the session frames with no CRC at all** — a bug.
-`sendAndRecieveHex(service, hex, skipCrc)` appends the CRC only when `skipCrc`
-is falsy, but every session caller routes through
-`sendReceive(service, hex, expectedAck, log)`, which forwards its 4th argument
-— the *logger*, always truthy — straight into the `skipCrc` slot. So
-`BD F2 05 01` goes out as 4 bytes when its own length byte declares 5. The
-firmware evidently tolerates it. Block reads and writes (`querySingle`,
-`queryFrames`) do **not** skip the CRC.
+**Session frames carry the CRC like everything else.** An earlier reading of
+this claimed the app dropped it — that `sendReceive(service, hex, expectedAck,
+log)` shifted its logger argument into the `skipCrc` slot of
+`sendAndRecieveHex`. That argument shift is not in the decompile: in
+`sendAndRecieveHex` index 2 is the logger and index 3 is `skipCrc`, and
+`_sendReceive` passes only three arguments, so `skipCrc` defaults false. The
+first request on the wire is literally `BD F2 05 01 D8`, confirmed in a
+`btmon` trace.
+
+Two more corrections from the same re-read:
+
+- **The HMAC arguments are the other way round.** The app calls
+  `CryptoJS.HmacSHA1(pairKey, random)` and CryptoJS's signature is
+  `(message, key)` — so the two random bytes are the **key** and the
+  18-character pair key is the **message**.
+- **The ACK "codes" are bit positions**, not integers. `checkACK` maps the set
+  bit of the response's penultimate byte through `ACKTable`: `0x80` is success,
+  `0x08` is "key not found". Both are acceptable replies to the first `F2`.
 
 ### Register map
 
@@ -185,8 +210,62 @@ Two earlier findings shaped the search and are worth keeping:
 - **The ~14 s hangup is not a generic idle timeout.** Three successful GAP
   reads at 5 s intervals did not reset it (13.19→26.65 s and 2.41→16.49 s in
   separate tests). The module wants its own protocol within ~14 s or it hangs
-  up. Whether valid frames stop the hangup is still unknown, and it decides
-  whether BLE could ever be a daemon transport or only a periodic poll.
+  up.
+
+### The ~15 s hangup is an authentication watchdog, and the PIN clears it
+
+The trace above was taken while subscribing to `69400002` *before* writing the
+PIN. That ordering is wrong, and it was making the module reject the PIN. The
+app writes the six raw ASCII PIN bytes first, waits for the Write Response,
+sleeps ~600 ms, and only then subscribes. Reproducing that order produces a
+clean, repeatable A/B:
+
+| PIN written | Link lifetime |
+|---|---|
+| correct (last six digits of the advertised name) | **45 s+, never dropped** |
+| `000000` (wrong) | **14.07 s, module hangs up** |
+| none at all | **14.48 s, module hangs up** |
+
+So the module validates the PIN, the derivation is right, and an authenticated
+link stays up for minutes — long enough for BLE to be a real daemon transport
+rather than a periodic poll. `icomm_session.py` implements this ordering;
+everything else in this directory still uses the old, failing one.
+
+### But 6940 is inert even authenticated
+
+Authenticated, with the CTA-2045 daemon stopped so nothing else was talking to
+the tank, the write pipe still answers nothing:
+
+- All of `A0..AF` and `F0..FF` (excluding `40` and `07`, the two commands that
+  change tank state), in both the `BD cc 04` and `BD cc 05 01` shapes — 60
+  well-formed frames, zero replies.
+- Twelve encodings of `BD F2 05 01 D8` — raw, spaced hex text, packed hex text,
+  lowercase, base64, with and without `\n`/`\r\n`, with and without the `BD`
+  prefix — all silent, listening on both notify pipes.
+
+The module accepts every write and produces nothing.
+
+### 7f51 is not DFU — it is an ASCII console
+
+The assumption that `7F51xxxx` was nRF DFU is wrong. It is a live,
+line-oriented ASCII interface that answers in ~60 ms. Send it anything and it
+replies `ERROR:invalidCMD\n`. That reply is an oracle: anything else means the
+token was recognised.
+
+Sweeping it found **exactly one** recognised token — the case-sensitive literal
+prefix `AT?`, which always answers `AT`. Trailing junk is ignored (`AT?HELP`,
+`AT?0` and `AT??` all answer `AT`); `AT`, `at?` and `AT ?` are all invalid. 676
+two-letter names and ~130 candidate words produced nothing else. The string
+`invalidCMD` appears nowhere in the app bundle or the APK, so this console is
+firmware-only and undocumented by the app.
+
+`AT?` looks like a host-side device-detection probe, which on a service that
+pairs a writer with a notifier most likely fronts a firmware-update path. It
+has not been fuzzed further, deliberately.
+
+This also proves the receive path is sound: 7f51 notifications arrive through
+the same BlueZ stack that hears nothing on 6940, so 6940 is not failing to be
+*delivered*, it is failing to be *produced*.
 
 Ruled out:
 
@@ -199,26 +278,39 @@ Ruled out:
 | Advertised name ≠ connected name | GAP 2A00 read returns the identical name |
 | MTU too small | Actually 151 |
 | Wrong pipe | Pin and frame crossed over both write pipes, listening on both notify pipes — silent in all 4 combinations |
-| Write-without-response | Tried; silent |
+| Write-without-response | Tried, before and after authenticating; silent |
 | Wrong block (26 / 27 / 13) | Silent |
+| Subscribe-before-PIN ordering | **Was real, and was breaking the PIN** — see above. Fixed, but did not produce a notification |
+| Wrong PIN | Disproved by A/B: the correct PIN holds the link, a wrong one does not |
+| Module not in a protocol-capable state | Disproved: it validates the PIN and holds an authenticated link |
+| Notify vs. indicate | `btmon` shows **zero `Handle Value` events of any kind**, and it sits below BlueZ's GATT layer, so an indication would have been captured even though BlueZ discards it. (BlueZ refuses a hand-written CCCD: `org.bluez.Error.NotPermitted`) |
+| Bus contention with the CTA-2045 daemon | Disproved: stopped `cta2045-mqtt` so nothing else was on the tank's bus; still silent |
+| Wrong frame encoding | Twelve variants, all silent |
 
 Earlier, before the protocol was recovered: **20 generic probes, zero replies**
 — both pipes × {`\r\n`, `AT\r\n`, `?\r\n`, `\x00`, `\x01`, `\xaa\x55`,
-`\x02\x00\x03`, `{"cmd":"info"}`, `hello\r\n`, `AT+GMR\r\n`}. This is not an
-AT-command bridge or a line-oriented text protocol, and nothing generic will
-ever get a reply from a device that only answers CRC-checked frames.
+`\x02\x00\x03`, `{"cmd":"info"}`, `hello\r\n`, `AT+GMR\r\n`}. Read that result
+carefully: those probes ran *unauthenticated*, and `AT\r\n` is not `AT?`, so it
+missed the one token 7f51 actually answers. The conclusion drawn at the time —
+"this is not a line-oriented text protocol" — was wrong for 7f51.
 
-Two leads remain, in order:
+Leads remaining, in order:
 
-1. **Re-enable the tank's Wi-Fi first.** The button dance that enters pairing
-   mode disables the radio. If the protocol stack only runs with Wi-Fi up, the
-   advertising state being probed is a bare provisioning shell.
+1. **The `heatPump` branch of the bundle.** The tank is an **HPS10-50H45DV**, a
+   heat pump. The app branches on device type in several places, including
+   entirely separate hardware instructions (this module is the *Bluetooth
+   button, press once* variant, not the *function button, press twice* one).
+   Nobody has yet checked whether device type also changes the BLE service, the
+   first frame, or the session sequence — which would explain
+   authenticated-but-inert exactly.
 2. **Sniff a real app session.** Android: developer options → *Bluetooth HCI
    snoop log*, then `adb pull` the btsnoop. iOS: Apple's Bluetooth logging
-   profile plus PacketLogger. Either settles it in one shot.
+   profile plus PacketLogger. Either settles it in one shot, and is now the
+   only thing that can distinguish "wrong frame" from "wrong state".
 
 A blind sweep of all 256 command bytes is the last resort — it risks hitting a
-factory-reset or firmware command.
+factory-reset or firmware command. The `A0..AF`/`F0..FF` sweep above was scoped
+to the two ranges with evidence behind them for that reason.
 
 ## Gotcha that produced three false conclusions
 
@@ -236,7 +328,8 @@ discovery starts and silently returns nothing.
 
 | Script | Purpose |
 |---|---|
-| `icomm_ble.py` | The real client: PIN, then reads blocks 26 and 13. Read-only. |
+| `icomm_session.py` | **The current client.** App-faithful ordering (PIN → 600 ms → subscribe → `F2`), full handshake through `F1`. `--subscribe-first` runs the old ordering as a control. Read-only. |
+| `icomm_ble.py` | Earlier client: PIN, then reads blocks 26 and 13. Still uses the old subscribe-first ordering. Read-only. |
 | `icomm_gatt.py` | Dump services, characteristics, properties |
 | `icomm_pin.py` | PIN-derivation variants |
 | `icomm_pipes.py` | Cross both write pipes against both notify pipes |

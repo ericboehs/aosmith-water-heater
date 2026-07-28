@@ -8,7 +8,8 @@ Notification, then drops the link at ~15s. That points at the app layer, and
 the only app-layer secret is the pairing code.
 
 The app derives it from the advertised name as name.slice(15) for a 21-char
-name, which gives "949045" -- but the same code path also has a "000000"
+name, which gives the last six digits -- but the same code path also has a
+"000000"
 default and a longer-name branch, so the derivation is worth testing against
 alternatives rather than assuming.
 
