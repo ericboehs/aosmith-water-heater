@@ -1,10 +1,11 @@
 """CTA-2045 UCM link and application layer for an A.O. Smith HPWH.
 
-Talks to the tank's EcoPort over RS-485 at 19200 8N1. Replaces EPRI's
-libcea2045, which mis-frames responses and cannot resync: it fails a request
-outright when the link ack and the response arrive in the same read, drops the
-response bytes, and then -- because it only acks frames it parsed successfully
--- leaves the tank retransmitting into a stream that never recovers.
+Talks to the tank's EcoPort over RS-485 at 19200 8N1, in place of EPRI's
+libcea2045. The framing errors that originally motivated writing this were
+later root-caused to two processes reading the same tty rather than to that
+library, so this exists for being self-contained and debuggable -- no build
+step, no C++ toolchain, and a trace hook on every byte -- not because
+libcea2045 was shown to be at fault.
 
 Three things about this bus are easy to get wrong and cost real debugging time:
 

@@ -105,10 +105,17 @@ daemon that set it.
    consecutive polls drift permanently out of step. `Link.request` drains for
    400 ms after each exchange.
 
-EPRI's `libcea2045` was tried first and abandoned. It fails a request outright
-when the link ack and the response arrive in the same read, drops the response
-bytes, and — because it only acks frames it parsed successfully — leaves the
-tank retransmitting into a stream that never recovers.
+EPRI's `libcea2045` was tried first. It reported a stream of
+`incomplete message received: 16/24/32` errors, which looked like a framing
+bug — but those counts are multiples of 8, and the real cause was a forgotten
+second process reading the same tty and taking bytes in 8-byte slices. **That
+was not the library's fault**, and the finding is recorded here rather than
+quietly dropped because it is exactly the kind of misattribution this bus
+invites.
+
+This implementation is kept because it is self-contained and debuggable — no
+build step, no C++ toolchain, a trace hook on every byte, and the port lock
+that makes the contention failure impossible to hit again.
 
 ## Layout
 
