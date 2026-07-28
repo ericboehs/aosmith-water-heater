@@ -286,6 +286,8 @@ Ruled out:
 | Notify vs. indicate | `btmon` shows **zero `Handle Value` events of any kind**, and it sits below BlueZ's GATT layer, so an indication would have been captured even though BlueZ discards it. (BlueZ refuses a hand-written CCCD: `org.bluez.Error.NotPermitted`) |
 | Bus contention with the CTA-2045 daemon | Disproved: stopped `cta2045-mqtt` so nothing else was on the tank's bus; still silent |
 | Wrong frame encoding | Twelve variants, all silent |
+| Device-type branching (heat pump vs. legacy) | Disproved in the bundle: one provider, one session module, one copy of each command literal and each UUID. `F2` is always the first frame regardless of device type or stored-key state; type only changes UI copy and the *post-session* register map |
+| Wrong register map | The next-gen map the bundle specifies for heat pumps — block 11 section read `BD A0 07 0B 00 10 F4`, plus blocks 1 and 2 — is as silent as the legacy block 26/13 one |
 
 Earlier, before the protocol was recovered: **20 generic probes, zero replies**
 — both pipes × {`\r\n`, `AT\r\n`, `?\r\n`, `\x00`, `\x01`, `\xaa\x55`,
@@ -294,19 +296,27 @@ carefully: those probes ran *unauthenticated*, and `AT\r\n` is not `AT?`, so it
 missed the one token 7f51 actually answers. The conclusion drawn at the time —
 "this is not a line-oriented text protocol" — was wrong for 7f51.
 
+The best remaining explanation is the one no amount of bundle reading can
+settle: **this module's firmware serves the `6940` command dispatcher only in
+some state we are not in.** Everything the app could possibly do differently
+has now been eliminated from the source side — there is no pre-session write,
+no unlock, no type branch, no alternate map, and the app's own contract
+requires the firmware to answer `F2` even with zero stored keys. The module
+validates the PIN and then dispatches nothing.
+
 Leads remaining, in order:
 
-1. **The `heatPump` branch of the bundle.** The tank is an **HPS10-50H45DV**, a
-   heat pump. The app branches on device type in several places, including
-   entirely separate hardware instructions (this module is the *Bluetooth
-   button, press once* variant, not the *function button, press twice* one).
-   Nobody has yet checked whether device type also changes the BLE service, the
-   first frame, or the session sequence — which would explain
-   authenticated-but-inert exactly.
-2. **Sniff a real app session.** Android: developer options → *Bluetooth HCI
-   snoop log*, then `adb pull` the btsnoop. iOS: Apple's Bluetooth logging
-   profile plus PacketLogger. Either settles it in one shot, and is now the
-   only thing that can distinguish "wrong frame" from "wrong state".
+1. **Sniff a real app session.** This is now the only thing that can
+   distinguish "wrong frame" from "wrong state". iOS: Apple's Bluetooth logging
+   profile plus PacketLogger from Additional Tools for Xcode. Android:
+   developer options → *Bluetooth HCI snoop log*, then `adb pull` the btsnoop.
+   Note the app's BLE setup screen needs a **registered** device record — it
+   pulls DSN, junction ID, device type and the derived pair key from cloud
+   state — so it lives in an existing water heater's connection/setup flow, not
+   in a generic pairing menu.
+2. **Establish whether the official app can talk to this module at all.** If it
+   also gets silence, the fault is firmware/state and BLE is a dead end for
+   this unit; if it succeeds, the HCI delta is the answer.
 
 A blind sweep of all 256 command bytes is the last resort — it risks hitting a
 factory-reset or firmware command. The `A0..AF`/`F0..FF` sweep above was scoped
