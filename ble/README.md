@@ -1,4 +1,4 @@
-# iCOMM Bluetooth LE — recovered protocol (blocked)
+# iCOMM Bluetooth LE — recovered protocol (dead end)
 
 A parallel line of attack on the same tank. CTA-2045 gives good demand-response
 control but cannot read the leak sensor, cannot report tank fullness directly,
@@ -11,6 +11,21 @@ stays up for minutes instead of being dropped at ~15 s — but every frame on
 the `6940` pipe is accepted at the ATT layer and no notification ever comes
 back. These scripts are the record of getting that far, kept so the next
 attempt does not start from zero.
+
+⚠️ **Read "BLE is the wrong door" before spending time here.** The official iOS
+app offers no Bluetooth setup path for this product family at all, and the
+bundle shows why. BLE is almost certainly not a transport this tank's firmware
+was ever expected to serve registers over.
+
+⚠️ **And the original motivation has largely dissolved.** Of the four things
+CTA-2045 cannot do, **three now work through the cloud API** and Home
+Assistant's own `aosmith` integration: mode (`eco`/`heat_pump`/`electric`),
+setpoint write (95–150 °F), and tank fullness
+(`sensor.*_hot_water_availability`). What remains genuinely unreachable is the
+**leak sensor** — and one real gap in the cloud path, `current_temperature:
+None`, i.e. no actual tank thermistor reading. If you want local tank
+temperature, the practical answer is different hardware, not this radio (see
+"Where this leaves it").
 
 What is deliberately **not** here: the APK and its 31 MB decompile. Those are
 A.O. Smith's. Register names, offsets and framing are interoperability facts
@@ -44,8 +59,17 @@ following generic A.O. Smith instructions.
 | `69400001-B5A3-F393-E0A9-E50E24DCCA99` | `69400003` (write, write-no-resp) | `69400002` (notify + CCCD) |
 | `7F510004-B5A3-F393-E0A9-E50E24DCCA9E` | `7F510006` (write, write-no-resp) | `7F510005` (notify + CCCD) |
 
-Plus Generic Access (1800) and Generic Attribute (1801). No advertised service
-UUIDs, no encryption required, connects without bonding.
+Plus Generic Access (1800) and Generic Attribute (1801). No encryption
+required, connects without bonding.
+
+A 45 s watch of the advertisement (`advert.py`) shows **one static payload**,
+never varying: complete local name, and service UUIDs `1800`, `1801`,
+`69400001` and `7f510004` — so both vendor services *are* advertised. (An
+earlier revision of this file said there were no advertised service UUIDs.
+Wrong.) The manufacturer-specific data uses company ID `0x0000` — Ericsson's,
+i.e. unregistered filler — and its payload is the module's own BLE address
+repeated back. Nothing in the advertisement changes with tank state, so there
+is no passive telemetry to scrape here.
 
 The `B5A3-F393-E0A9-E50E24DCCA9E` suffix is the **exact Nordic UART Service
 base UUID**, and the layout (service `…04`, notify `…05`, write `…06`) is
@@ -245,6 +269,25 @@ the tank, the write pipe still answers nothing:
 
 The module accepts every write and produces nothing.
 
+A second pass (`deep.py`, `at3.py`, `blindpair.py`, `crosspipe.py`) closed the
+remaining gaps, each one a separate authenticated run at the hardware:
+
+| Tried | Result |
+|---|---|
+| **CTA-2045 adapter physically unplugged** from the EcoPort | still silent — stronger than merely stopping the daemon |
+| **Real negotiated MTU**, via `await client._backend._acquire_mtu()` | **151.** bleak 0.22 reports its 23-byte default until you ask, which is what made MTU look like a suspect |
+| **12 s settle** after the PIN before the first frame | silent |
+| **ASCII on `6940`** — `AT?`, `?`, `help`, each with and without CRLF | silent. The pipe parses ASCII (that is what the PIN is) but shares no grammar with `7f51` |
+| **Write-without-response**, after authenticating | silent |
+| **All 256 values of the frame start byte** (`BD` position), in both the `cc 04` and `cc 05 01` shapes | silent. Scoped to `F2` and `A0` in the command slot, never `40` or `07` |
+| **Blind `F0` pair-key store** (18 bytes from `SHA256(DSN)`), then `F2` again | silent — no ACK to the store either |
+| **Both notify pipes subscribed at once**, `F2` out each write pipe | only `7f51` ever speaks, in all four combinations |
+| **`7f51` console swept harder** — 95 `AT<printable>` + 675 `XY?` probes | still exactly one token: `AT?` → `AT` |
+
+That retires the "blind sweep of all 256 command bytes is the last resort" note
+this file used to end on, at least for the start byte. The command byte remains
+un-swept on purpose: `40` and `07` write and commit.
+
 ### 7f51 is not DFU — it is an ASCII console
 
 The assumption that `7F51xxxx` was nRF DFU is wrong. It is a live,
@@ -267,14 +310,39 @@ This also proves the receive path is sound: 7f51 notifications arrive through
 the same BlueZ stack that hears nothing on 6940, so 6940 is not failing to be
 *delivered*, it is failing to be *produced*.
 
-Ruled out:
+### Bonding is not the missing piece — the firmware has no SMP
+
+Worth stating precisely, because "a peripheral that requires encryption before
+it will notify" behaves *exactly* like this one and it is the obvious next
+theory. It is wrong.
+
+The earlier `AuthenticationFailed` in 70 ms was ambiguous: BlueZ returns that
+when no pairing agent is registered, so the stack may simply have had nothing to
+answer a passkey request with. `passkey.py` eliminates that reading — it stands
+up a real `org.bluez.Agent1` over `dbus_fast` with `DisplayYesNo` capability,
+offering the six digits from the advertised name as an SMP passkey (they are the
+right shape for one), and registers every callback: `RequestPasskey`,
+`DisplayPasskey`, `RequestConfirmation`, `RequestAuthorization`, `AuthorizeService`.
+
+**Not one callback fires.** And `btmon` gives the reason directly:
+
+```
+SMP: Pairing Failed (0x05) len 1
+    Reason: Pairing not supported (0x05)
+```
+
+The module rejects the pairing request before any association model is
+negotiated. There is no bonded state to reach, the six digits are an
+application credential only, and encryption is not what `6940` is waiting for.
+
+### Ruled out
 
 | Hypothesis | Result |
 |---|---|
 | Wrong CRC | Table + poly 0x5E verified by hand: `BD F2 05 01` → `D8` |
 | Frames need / don't need the CRC byte | Tried both; silent either way |
 | Wrong pairing code | Six variants — derived 6-digit, full serial, full name, `000000`, 9-digit tail, NUL-terminated. Silent |
-| Link must be bonded / encrypted | `pair()` and `bluetoothctl pair` both fail instantly with `AuthenticationFailed` and **no passkey prompt** — the module refuses SMP outright |
+| Link must be bonded / encrypted | Settled at the HCI layer: `SMP: Pairing Failed (0x05) Reason: Pairing not supported (0x05)`. **The firmware has no SMP at all** — see below |
 | Advertised name ≠ connected name | GAP 2A00 read returns the identical name |
 | MTU too small | Actually 151 |
 | Wrong pipe | Pin and frame crossed over both write pipes, listening on both notify pipes — silent in all 4 combinations |
@@ -284,7 +352,7 @@ Ruled out:
 | Wrong PIN | Disproved by A/B: the correct PIN holds the link, a wrong one does not |
 | Module not in a protocol-capable state | Disproved: it validates the PIN and holds an authenticated link |
 | Notify vs. indicate | `btmon` shows **zero `Handle Value` events of any kind**, and it sits below BlueZ's GATT layer, so an indication would have been captured even though BlueZ discards it. (BlueZ refuses a hand-written CCCD: `org.bluez.Error.NotPermitted`) |
-| Bus contention with the CTA-2045 daemon | Disproved: stopped `cta2045-mqtt` so nothing else was on the tank's bus; still silent |
+| Bus contention with the CTA-2045 adapter | Disproved twice: stopped `cta2045-mqtt`, then **physically unplugged the adapter from the EcoPort**; still silent |
 | Wrong frame encoding | Twelve variants, all silent |
 | Device-type branching (heat pump vs. legacy) | Disproved in the bundle: one provider, one session module, one copy of each command literal and each UUID. `F2` is always the first frame regardless of device type or stored-key state; type only changes UI copy and the *post-session* register map |
 | Wrong register map | The next-gen map the bundle specifies for heat pumps — block 11 section read `BD A0 07 0B 00 10 F4`, plus blocks 1 and 2 — is as silent as the legacy block 26/13 one |
@@ -296,31 +364,129 @@ carefully: those probes ran *unauthenticated*, and `AT\r\n` is not `AT?`, so it
 missed the one token 7f51 actually answers. The conclusion drawn at the time —
 "this is not a line-oriented text protocol" — was wrong for 7f51.
 
-The best remaining explanation is the one no amount of bundle reading can
-settle: **this module's firmware serves the `6940` command dispatcher only in
-some state we are not in.** Everything the app could possibly do differently
-has now been eliminated from the source side — there is no pre-session write,
-no unlock, no type branch, no alternate map, and the app's own contract
-requires the firmware to answer `F2` even with zero stored keys. The module
-validates the PIN and then dispatches nothing.
+Everything the app could possibly do differently has now been eliminated from
+the source side — there is no pre-session write, no unlock, no type branch, no
+alternate map, and the app's own contract requires the firmware to answer `F2`
+even with zero stored keys. The module validates the PIN and then dispatches
+nothing.
 
-Leads remaining, in order:
+Earlier revisions of this file called that "some state we are not in" and left
+it there, on the grounds that no amount of bundle reading could settle it. It is
+settled now, and the answer is not a state. See the next section.
 
-1. **Sniff a real app session.** This is now the only thing that can
-   distinguish "wrong frame" from "wrong state". iOS: Apple's Bluetooth logging
-   profile plus PacketLogger from Additional Tools for Xcode. Android:
-   developer options → *Bluetooth HCI snoop log*, then `adb pull` the btsnoop.
-   Note the app's BLE setup screen needs a **registered** device record — it
-   pulls DSN, junction ID, device type and the derived pair key from cloud
-   state — so it lives in an existing water heater's connection/setup flow, not
-   in a generic pairing menu.
-2. **Establish whether the official app can talk to this module at all.** If it
-   also gets silence, the fault is firmware/state and BLE is a dead end for
-   this unit; if it succeeds, the HCI delta is the answer.
+## BLE is the wrong door
 
-A blind sweep of all 256 command bytes is the last resort — it risks hitting a
-factory-reset or firmware command. The `A0..AF`/`F0..FF` sweep above was scoped
-to the two ranges with evidence behind them for that reason.
+This file used to end on two leads: sniff a real app session, and establish
+whether the official app can talk to this module at all. **Both are now closed,
+and the second one closes the whole line of attack.**
+
+**The official iOS app offers no Bluetooth setup option for this tank.** Not a
+greyed-out one, not one behind a menu — the BLE path is never presented. And the
+bundle says why: the setup-method screen is driven by the device's
+`hardware.connectors` metadata, which arrives **from the cloud** as part of the
+product record. It is not gated on platform, not on model string, not on
+firmware version. For this product family that metadata does not list BLE, so
+the app never offers it.
+
+Which retires the sniffing lead too. There is no app session to capture on iOS
+because the app will not start one, and an Android HCI snoop is not available
+here. There is no delta left to diff.
+
+Read together with everything above, the picture is coherent for the first time.
+The `F0`/`F1`/`F2`/`F3`/`F4` handshake — store pair key, list keys, delete key,
+request random, HMAC-SHA1 challenge, 18-byte key derived from `SHA256(DSN)` — is
+shaped like **commissioning**, not telemetry. `AC000W…` in the advertised name
+is an **Ayla Networks DSN**. The most economical explanation of a module that
+validates a PIN, holds an authenticated link for minutes, and then dispatches
+nothing is that **there is no register dispatcher behind `6940` on this
+firmware, because registers were never meant to travel over it.**
+
+### The path the vendor actually uses: SoftAP
+
+The bundle does contain a device-local provisioning flow, and it is HTTP over
+the module's own access point, not BLE:
+
+| Step | Request |
+|---|---|
+| 1 | `POST http://192.168.0.1/wifi_scan.json` — trigger a scan |
+| 2 | `GET /wifi_scan_results.json` — retrieve the AP list |
+| 3 | `POST /wifi_connect.json?bssid=<bssid>&key=<psk>` — join |
+| 4 | `GET /wifi_status.json` — poll until connected |
+
+**2.4 GHz only**; the app filters the scan results and rejects 5 GHz. Entering
+the mode is a front-panel gesture, and **flashing green means the module is
+already advertising its own AP** — the same LED state that arms a factory reset
+on the function-button variant, so read the warning at the top of this file
+first.
+
+This is Ayla's standard SoftAP flow. It provisions Wi-Fi. It does not expose
+registers either.
+
+### Ayla LAN mode: real protocol, wrong owner
+
+Once provisioned the module sits on the LAN and answers HTTP. `portscan2.py`
+found **exactly one open TCP port, 80**, and it serves:
+
+```
+GET /regtoken.json
+{"regtoken":"<rotating>","registered":0,
+ "registration_type":"Same-LAN","host_symname":"NextGenHP"}
+```
+
+Three things fall out of that one response:
+
+- **`host_symname: NextGenHP` settles the device-type question** the bundle
+  could not. This *is* a next-gen heat pump module, so the next-gen register map
+  (blocks 1/2/11) and the `round(v/256*1.8+32)` temperature convention are the
+  correct ones for it. That removes "we were reading the wrong map" as an
+  explanation for the silence on `6940` and hardens the conclusion above.
+- **`registration_type: Same-LAN`** is Ayla's flow where the client POSTs its own
+  address to `/local_reg.json`, the *device* connects back, and a key exchange
+  follows. `lanmode.py` stands up a logging HTTP server and knocks. Nothing ever
+  calls back: `local_reg.json` **404s on both POST and PUT across five path
+  spellings** (`local_reg.json`, `client/local_reg.json`, `local_lan.json`,
+  `lan.json`, `localreg.json`).
+- **`registered: 0`** with a token that rotates on each read is the tell. LAN
+  mode needs a cloud-pushed `lanip` config and a LAN key, and both belong to the
+  account that owns the DSN — **A.O. Smith's Ayla OEM account, not ours.** Two
+  layers of registration, and the outer one is not ours to satisfy. No amount of
+  local poking opens it.
+
+There is also no Ayla LAN client in the app bundle or any of the six DEX files,
+so the app itself never uses LAN mode; it goes to the cloud.
+
+⚠️ **Scanning methodology, learned the hard way.** `portscan.py`'s 400-way
+concurrent sweep reported *every* port closed — including port 80, which answers
+fine on its own. The module's embedded TCP stack simply stops accepting under
+load. Both scripts are kept: `portscan2.py` walks two ports at a time with a
+pause and re-checks `/regtoken.json` between batches to prove the target is
+still alive, and that is the one to use.
+
+## Where this leaves it
+
+BLE on this tank is a dead end, and it is a dead end for a reason that no
+further experiment at the radio will change. The remaining ways forward, none of
+them BLE:
+
+1. **The cloud API already delivers three of the four goals** — mode, setpoint
+   write, tank fullness — through Home Assistant's `aosmith` integration
+   (`py-aosmith`). If that is enough, stop here.
+2. **`current_temperature` is `None`** in that integration: the cloud never
+   reports a tank thermistor. No local transport on this hardware exposes it
+   either. Rheem's econet tanks do, over RS485 on a diagnostic port
+   (`esphome-econet`), fully locally — which is a hardware-replacement answer,
+   not a protocol one.
+3. **The leak sensor is unreachable everywhere**, and not just on A.O. Smith:
+   Rheem's LeakGuard is equally closed. Registers 26/35 and 26/36 exist in the
+   map recovered here, but nothing serves them.
+4. **CTA-2045 load-up commands are being ignored**, and the cloud shows
+   `isCtaUcmPresent: true` alongside `isDemandResponsePaused: true` and
+   `isEnrolled: false`. That is the one genuinely open thread with a plausible
+   payoff, and it lives in the CTA-2045 side of this repo, not here.
+5. If someone with an **Android** phone and this tank ever wants to try, an HCI
+   snoop is still theoretically the decisive capture — but only if the app
+   offers that device a BLE path, which for this product family it appears not
+   to.
 
 ## Gotcha that produced three false conclusions
 
@@ -349,13 +515,48 @@ discovery starts and silently returns nothing.
 | `blelisten.py` | Subscribe and wait for anything unprompted (nothing) |
 | `blekeepalive.py` | Characterise the ~14 s hangup |
 | `blescan.py` | Scan and match the iCOMM by name |
+| `advert.py` | Dump the advertisement and watch 45 s for change (static) |
 
-Needs `bleak`. Run from the Pi — its radio is closer to the tank than a laptop,
-and `btmon` is available there for tracing. Set `ICOMM_ADDR` to pin a specific
-module; leave it unset and they scan for the first `iCOMM-*` advertiser.
+Probing `6940`:
+
+| Script | Purpose |
+|---|---|
+| `deep.py` | The five untried axes in one session: real MTU, ASCII on `6940`, write-without-response, long settle, start-byte sweep |
+| `crosspipe.py` | Both notify pipes subscribed at once, every frame down each write pipe |
+| `cmdsweep.py` | `A0..AF` / `F0..FF` in both frame shapes |
+| `encoding.py` | Twelve encodings of the same `F2` frame |
+| `blindpair.py` | Store an `F0` pair key blind, then re-ask `F2` |
+| `nextgen.py` | The next-gen register map (blocks 1/2/11) |
+| `cccd.py` | Indicate rather than notify |
+| `sweep.py` | Where an authenticated answer might come back |
+| `watchdog.py`, `wrongpin.py` | The PIN A/B on link lifetime |
+
+Probing `7f51` and SMP:
+
+| Script | Purpose |
+|---|---|
+| `console.py`, `oracle.py`, `oracle2.py`, `oracle3.py` | The `ERROR:invalidCMD` oracle, then the two-letter name space |
+| `at3.py` | The three-character `AT?`-shaped command space |
+| `bond.py` | Bond first, then run the ordinary session |
+| `passkey.py` | Register a real `org.bluez.Agent1` and offer the six digits as an SMP passkey |
+
+Over the network, once the module is provisioned:
+
+| Script | Purpose |
+|---|---|
+| `lanmode.py` | Stand up a logging HTTP server, then knock on `/local_reg.json` for a callback |
+| `portscan2.py` | Gentle TCP scan (**use this one**) plus the LAN-mode endpoint list |
+| `portscan.py` | The 400-way scan that produced a false all-closed result. Kept as a caution |
+
+Needs `bleak`; `passkey.py` also needs `dbus_fast`. Run from the Pi — its radio
+is closer to the tank than a laptop, and `btmon` is available there for tracing.
+Set `ICOMM_ADDR` to pin a specific module; leave it unset and they scan for the
+first `iCOMM-*` advertiser. The three network scripts want `ICOMM_IP`.
 
 **These only read.** Nothing here writes tank configuration; that is deliberate
-while the protocol is unverified against a live response.
+while the protocol is unverified against a live response. The one exception is
+`blindpair.py`, which stores a pair key — a slot the app itself manages and
+deletes from, not tank configuration.
 
 ## If the module ever answers
 
@@ -365,6 +566,7 @@ hot-water figure. That single read settles the temperature encoding, confirms
 the mode enum, and tells you whether `WATER_AVAILABLE` is the real tank-fullness
 number or just the same 0/50/100 quantisation the cloud reports.
 
-Then the four things CTA-2045 cannot do — mode, setpoint write, leak sensor,
-tank fullness — all become reachable, which is the entire reason this line of
-attack exists.
+The prize is now narrower than when this work started, because the cloud API
+covers mode, setpoint and tank fullness already. What `6940` would still add
+that nothing else can: **26/36 `WATER_SENSOR_STATUS`, the leak sensor** — and a
+real tank temperature, if one of these blocks turns out to carry it.

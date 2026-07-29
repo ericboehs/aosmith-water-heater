@@ -232,7 +232,7 @@ tools/price-stream-probe.py         does the tank act on prices, or just accept 
 tools/price-stream-characterize.py  A/B test: relative shape vs absolute threshold
 homeassistant/cards.py    Lovelace card definitions
 homeassistant/patch_dashboard.py   installs them via the websocket API
-ble/                      iCOMM Bluetooth LE protocol, recovered but blocked
+ble/                      iCOMM Bluetooth LE protocol, recovered but a dead end
 ```
 
 ## The Bluetooth side
@@ -242,10 +242,21 @@ write and the mode-related efficiency-level write. The iCOMM module exposes all
 three over BLE, and its protocol was fully recovered by decompiling the app's
 Hermes bundle — framing, CRC-8, session handshake, register map.
 
-It does not work. The module accepts every frame at the ATT layer and never
-sends a notification back. `ble/` has the scripts, the register tables, and
-[a write-up of everything ruled out](ble/README.md), so the next attempt does
-not start from zero.
+It does not work, and it is not going to. The module validates the PIN, holds an
+authenticated link for minutes, accepts every frame at the ATT layer, and never
+sends a notification back. The reason turned out not to be a wrong frame or a
+missing state: **the official app offers no Bluetooth setup path for this product
+family at all** — the setup method comes from cloud metadata — so BLE is not a
+transport this firmware was ever expected to serve registers over. The vendor's
+real provisioning path is SoftAP, and Ayla LAN mode is gated behind A.O. Smith's
+own OEM account.
+
+Two of the three gaps closed elsewhere in the meantime: mode and setpoint write
+both work through the cloud API and Home Assistant's `aosmith` integration. The
+leak sensor remains unreachable by any route.
+
+`ble/` has the scripts, the register tables, and [the full write-up](ble/README.md)
+— everything ruled out, why it is ruled out, and what is left.
 
 ## Install
 
