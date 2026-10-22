@@ -32,11 +32,16 @@ remote() { ssh -o BatchMode=yes -o ConnectTimeout=8 "$UDM" "$@"; }
 cleanup() {
   say "cleanup"
   sudo pkill -INT -f "tcpdump -i en33 .*port $PROXY_PORT" 2>/dev/null || true
+  # udm-redirect.sh only removes its rules from an EXIT trap, and it ignores
+  # SIGTERM while blocked on ssh, so it is killed outright and its two rules are
+  # deleted explicitly below. "Killed: 9" in the log is this line, not a failure.
   for pid in $(pgrep -f udm-redirect.sh); do kill -9 "$pid" 2>/dev/null || true; done
   remote "iptables -t nat -D PREROUTING -s $MODULE_IP -p tcp --dport 443 -m comment --comment icomm-mitm -j DNAT --to-destination $PROXY_HOST:$PROXY_PORT 2>/dev/null
           iptables -t nat -D POSTROUTING -s $MODULE_IP -d $PROXY_HOST -p tcp --dport $PROXY_PORT -m comment --comment icomm-mitm -j SNAT --to-source 10.0.1.1 2>/dev/null" >/dev/null 2>&1 || true
   sleep 1
-  say "gateway rules left: $(remote "iptables -t nat -S | grep -c icomm-mitm" 2>/dev/null | tr -d '\r')"
+  left=$(remote "iptables -t nat -S | grep -c icomm-mitm" 2>/dev/null | tr -d '\r')
+  say "gateway rules left: ${left:-unknown}"
+  [ "${left:-1}" = "0" ] || say "WARNING: rules still armed — remove them by hand before walking away"
 }
 trap cleanup EXIT INT TERM
 
