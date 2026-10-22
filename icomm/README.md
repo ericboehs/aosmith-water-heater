@@ -350,9 +350,58 @@ problem and the trust store never entered into it. The leaf's own signature is
 regardless of which root the chain ends at. An RSA/SHA-256 leaf, from any CA at
 all, works. There is no certificate-side fix needed and no root to chase.
 
+## What the cloud channel actually carries
+
+With the TLS channel opened (see [`../mitm/README.md`](../mitm/README.md)), a
+full session was decoded: **device id 29689890**, and every cloud-side change
+produces one connection carrying the same four requests in the same order.
+
+```
+POST /devices/29689890/properties/superBlockDyn1/datapoints.xml    telemetry push
+GET  /devices/29689890/commands.xml?signal=-54                     command poll (RSSI)
+POST /devices/29689890/properties/setBlockParameter/datapoints.xml acknowledgement, empty value
+POST /devices/29689890/properties/superBlockDyn1/datapoints.xml    telemetry again
+```
+
+Over eight minutes and three setpoint changes, that is all Ayla queued: three
+`setBlockParameter` commands, no schedules, no `cmds`, no other property pushes.
+
+### The setpoint command is the BLE frame format
+
+`setBlockParameter` carries the same proprietary framing already recovered from
+the BLE console — `0xBD` prefix, `0x40` = block write — with the setpoint as
+**16-bit big-endian, 1/256 °C**, exactly the `convertTemperature` formula
+documented in [`../ble/README.md`](../ble/README.md):
+
+| Asked for | 1/256 °C | Value |
+|---|---|---|
+| 122 °F | 12800 `0x3200` | `BD 40 08 0B 06 32 00 56` |
+| 121 °F | 12658 `0x3172` | `BD 40 08 0B 06 31 72 28` |
+| 120 °F | 12516 `0x30E4` | `BD 40 08 0B 06 30 E4 5E` |
+
+The trailing byte varies with the payload (presumed checksum). The `08 0B 06`
+header does **not** match the `ble/` block table — block 13 holds `REMOTE_SETPOINT`
+at offset 2 — so the cloud's framing is related to, but not identical with, the
+BLE one. Worth resolving before hand-writing commands.
+
+### And the telemetry uses the same encoding
+
+`superBlockDyn1` is a comma-separated list of hex blocks, and the temperatures in
+it decode with the same 1/256 °C rule, which ties the two sides together:
+
+| Field | Where | Evidence |
+|---|---|---|
+| current setpoint | `block[3]`, offsets **0** and **12** | followed 122 → 121 → 120 °F across successive posts |
+| max setpoint | `block[1]`, offset **86** | `0x418E` = 16782 = 150.0 °F, constant across every post |
+| setpoint repeated | `block[1]`, offsets 80 / 84 / 112 / 114 | held `0x3172` while the setpoint was 121 °F |
+
 ## Artifacts
 
-Captures on the tank Pi, `~` = `/home/ericboehs`:
+Captures are kept outside the repo, in
+`~/Documents/aosmith-water-heater/captures/`, with an `INDEX.md` listing sizes,
+SHA-256 prefixes and what each one proves. Phases 1–5 were taken on the tank Pi
+(`~` = `/home/ericboehs`) and copied there; phases 6–8 are from the gateway-redirect
+windows on the Mac.
 
 | File | Size | Contents |
 |---|---|---|
@@ -361,7 +410,12 @@ Captures on the tank Pi, `~` = `/home/ericboehs`:
 | `icomm_phase3_dns.pcap` | 427 KB | DNS interception attempt (race lost), full TLS handshake + server chain |
 | `icomm_phase4_mitm.pcap` | 329 KB | mitmproxy served its own CA — module resets |
 | `icomm_phase5_pinning.pcap` | 63 KB | correct-name cert, same rejection |
-| `icomm_phase6_window.pcap` | 21 KB | RSA/SHA-256 throwaway CA **accepted**: full handshake, app data in clear |
+| `icomm_phase6_p384_stall.pcap` | 10 KB | P-384 leaf: full flight delivered, then 30.000 s of silence, RST, retry |
+| `icomm_phase7_rsa_accepted.pcap` | 21 KB | RSA/SHA-256 throwaway CA **accepted**: full handshake, app data in clear |
+| `icomm_phase8_rsa_logged.pcap` | 20 KB | same session, captured alongside the flow log |
+| `icomm_phase8_flows.jsonl` | 14 KB | six decrypted exchanges, bodies included |
+| `icomm_phase9_long_session.pcap` | 64 KB | eight minutes, three cloud-side changes |
+| `icomm_phase9_flows.jsonl` | 38 KB | 15 exchanges: command polls, acknowledgements, telemetry posts |
 
 Also captured but not preserved: the truncated first Phase 1 capture, lost to a
 stale-ownership `Permission denied` on the output file.

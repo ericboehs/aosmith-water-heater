@@ -144,6 +144,9 @@ class AylaMITM:
             if flow.response.timestamp_end
             else None,
             "client_cipher": getattr(flow.client_conn, "cipher", None),
+            # The module arrives via the gateway's SNAT; anything else in the log
+            # (127.0.0.1, ::1) is a local probe and not the appliance.
+            "client": flow.client_conn.peername[0] if flow.client_conn.peername else None,
         }
         with self.log_path.open("a") as fh:
             fh.write(json.dumps(record) + "\n")

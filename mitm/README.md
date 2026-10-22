@@ -54,6 +54,28 @@ earlier 24.9 s figure was a coarser TCP-level observation of the same timer.
 * TLS 1.2 and the module's four legacy suites
 * budget **≥ 15 s**: the session only starts after ~5.7 s of DH exponentiation
 
+## Captures
+
+The pcaps and flow logs live outside the repo, in
+`~/Documents/aosmith-water-heater/captures/`, with an `INDEX.md` giving each
+file's size, SHA-256 prefix and what it proves. They are not committed: pcaps are
+gitignored by policy and they carry the tank's telemetry.
+
+Read one with the reassembler in this directory rather than a hexdump — a server
+flight is split across TCP segments, and per-segment parsing lies about which
+handshake messages were actually delivered:
+
+```bash
+./mitm/tls-window.py ~/Documents/aosmith-water-heater/captures/icomm_phase7_rsa_accepted.pcap
+```
+
+The pair worth comparing is `icomm_phase6_p384_stall` against
+`icomm_phase7_rsa_accepted`: identical in every respect except the certificate's
+signature algorithm, and opposite outcomes. `icomm_phase8_flows.jsonl` is the
+decrypted conversation from the accepted one, and `icomm_phase9_*` is a longer
+session that decodes the cloud's setpoint command and the matching telemetry
+offsets — see that directory's `INDEX.md`.
+
 ## What the appliance supports, measured
 
 Everything here came off the wire from this unit on 21–22 October 2026. None of it
