@@ -410,14 +410,24 @@ it decode with the same 1/256 °C rule, which ties the two sides together:
 
 | Field | Where | Evidence |
 |---|---|---|
-| current setpoint | `block[3]`, offsets **0** and **12** | followed 122 → 121 → 120 → *125 (injected)* → 120 °F |
+| current setpoint | `block[3]` offsets **0** and **12**, **mirrored** at `block[1]` offsets **80 / 84 / 112 / 114** | every value we wrote appeared in all six places within one post: 149 → 148 → 149 |
 | max setpoint | `block[1]`, offset **86** | `0x418E` = 16782 = 150.0 °F, constant |
-| **water temperature** | `block[1]`, offsets **80 / 84 / 112 / 114** (all four identical) | 117 → 117 → 116 → 116 → 115 → 115 °F, independent of the setpoint |
-| Wi-Fi RSSI | `block[4]`, offset **40**, signed 16-bit | −51…−55 dBm across posts, matching `?signal=-54` on the polls |
-| ambient / inlet temperature | `block[4]`, offset **30** | 47.9 → 42.0 → 41.7 → 41.5 °F, drifting like a garage in October |
-| mode | `block[1]`, offsets **89** and **91** | constant `0x08` = `EFFICIENCY`, the app's name for heat-pump mode, matching the entity's `heat_pump` state |
-| tank fullness | `block[3]`, offsets **35** and **39** | constant `100`; never seen changing, so only a candidate |
-| device clock | `block[1]`, offset **70**, 32-bit BE Unix time | advanced with the posts, trailing UTC by ~5 h — the module keeps local time |
+| **water temperature, tank top** | `block[1]`, offset **0** | 129 → 108 °F across six posts while the setpoint never moved — the tank being drawn down |
+| **water temperature, tank bottom** | `block[1]`, offset **4** | 99 → 87 °F over the same posts, riding ~30 °F below the top |
+| hot water available | `block[3]`, offset **30** | 0 while the tank was drawn down, 100 once reheated |
+| air at the unit | `block[4]`, offset **30** | 41–48 °F while the heat pump ran, 82–83 °F in electric mode |
+| Wi-Fi RSSI | `block[4]`, offset **40**, signed 16-bit | −51…−55 dBm, matching `?signal=-54` on the polls |
+| device clock | `block[1]`, offsets **70–73**, 32-bit BE Unix time | advanced 4.2 h between two sessions, matching the wall clock |
+
+**Corrections, kept because they were wrong in public.** Mode is *not* at
+`block[1]` 89/91 — that byte reads `0x08` in both heat-pump and electric mode, so
+it is something else. Tank fullness is *not* at `block[3]` 35/39 — those read
+`100` throughout, including when the tank was drawn down. The real availability
+field is `block[3]` 30, which went 0 → 100. The one byte that did track the
+heat-pump/electric change is `block[3]` 31: `5` → `1`. Candidate, not confirmed.
+
+`block[1]` 6…12, 76 and 78 decode as `0.0 °C` — zeros, not 32 °F. Reading them as
+temperatures is how the wrong mode field got picked in the first place.
 
 Temperatures are `1/256 °C` big-endian throughout. Distinguish the two that look
 alike: `0x2E1C` = 11804 = 46.11 °C = **115.0 °F** is the water, while `0x30E4` =

@@ -312,6 +312,28 @@ the replayable stream for `mitmproxy --rfile`.
 happens — gateway rules removed, `tcpdump` stopped, setpoint restored — and both
 print the rule count on the way out.
 
+## Writes only land on a poll, and polls are rare
+
+`setBlockParameter` is delivered as the *reply* to the module's own
+`GET /devices/<id>/commands.xml`, so an injected write cannot be pushed — it waits
+for the next poll, and the module decides when that is. Measured today, with the
+redirect armed and the device healthy and posting every 30–60 s:
+
+| Window | Telemetry posts | Command polls |
+|---|---|---|
+| 9 min, rule loaded | 6 | **1** |
+| 6 min, rule loaded | 5 | **0** |
+
+During the earlier eight-minute observation every connection polled, so something
+about the device's state changes the cadence — possibly that it only polls when it
+believes a command may be waiting. Until that is understood, treat a write as
+*queued*, not *applied*, and confirm it from the telemetry that follows.
+
+That is also why `each` exists: a rule can hold a *ladder* of responses and serve
+them one per poll, so 149 → 150 → 148 → 150 all happen inside a single window
+without restarting the proxy. With polls this sparse the ladder needs a longer
+window than the values it steps through, which is itself the honest measurement.
+
 ## The write path
 
 The cloud's `setBlockParameter` property carries a block write in the module's own

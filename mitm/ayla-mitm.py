@@ -13,6 +13,14 @@ Optional fault injection, for development rather than observation:
       "action": {"status": 500, "body": "{}", "headers": {"X-Test": "1"}}}]
 
 The first matching rule replaces the response, so the upstream is never called.
+
+A rule may also carry an `each` list instead of a single `action`: successive
+matches serve successive entries, and the last one repeats. That is how a ladder
+of setpoints gets served without restarting the proxy — useful for working out
+which telemetry offsets follow a value and which only drift:
+
+    [{"match": {"path_regex": "commands.xml"},
+      "each": [{"body": "...148 F..."}, {"body": "...150 F..."}]}]
 """
 
 import json
@@ -67,6 +75,7 @@ class AylaMITM:
             ctx.log.info(f"loaded {len(self.rules)} response rule(s)")
             for r in self.rules:
                 r["_re"] = re.compile(r.get("match", {}).get("path_regex", ""))
+                r["_step"] = 0
 
     # -- tls ------------------------------------------------------------
     def tls_start_client(self, data) -> None:
@@ -86,7 +95,7 @@ class AylaMITM:
         rule = self._match(flow.request)
         if rule is None:
             return
-        action = rule.get("action", {})
+        action = self._next_action(rule)
         body = action.get("body", "")
         if not isinstance(body, str):
             body = json.dumps(body)
@@ -95,7 +104,18 @@ class AylaMITM:
             body.encode() if isinstance(body, str) else body,
             action.get("headers", {"Content-Type": "application/json"}),
         )
-        ctx.log.info(f"answered from rule: {flow.request.method} {flow.request.path}")
+        ctx.log.info(
+            f"answered from rule: {flow.request.method} {flow.request.path}"
+            + (f" (step {rule['_step'] + 1}/{len(rule['each'])})" if rule.get("_each") else "")
+        )
+
+    def _next_action(self, rule: dict) -> dict:
+        """One action per match when the rule is a ladder, else always the same."""
+        if not rule.get("each"):
+            return rule.get("action", {})
+        step = min(rule.get("_step", 0), len(rule["each"]) - 1)
+        rule["_step"] = step + 1
+        return rule["each"][step]
 
     def response(self, flow: http.HTTPFlow) -> None:
         self.count += 1

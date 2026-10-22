@@ -1,0 +1,37 @@
+[
+  {
+    "match": {
+      "path_regex": "commands\\.xml"
+    },
+    "each": [
+      {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/xml"
+        },
+        "body": "<commands><properties><property><base-type>string</base-type><mime-type></mime-type><name>setBlockParameter</name><value>BD 40 08 0B 06 41 00 20</value></property></properties><schedules/><cmds/></commands>"
+      },
+      {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/xml"
+        },
+        "body": "<commands><properties><property><base-type>string</base-type><mime-type></mime-type><name>setBlockParameter</name><value>BD 40 08 0B 06 41 8E 10</value></property></properties><schedules/><cmds/></commands>"
+      },
+      {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/xml"
+        },
+        "body": "<commands><properties><property><base-type>string</base-type><mime-type></mime-type><name>setBlockParameter</name><value>BD 40 08 0B 06 40 72 24</value></property></properties><schedules/><cmds/></commands>"
+      },
+      {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/xml"
+        },
+        "body": "<commands><properties><property><base-type>string</base-type><mime-type></mime-type><name>setBlockParameter</name><value>BD 40 08 0B 06 41 8E 10</value></property></properties><schedules/><cmds/></commands>"
+      }
+    ]
+  }
+]
