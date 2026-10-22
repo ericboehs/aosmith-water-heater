@@ -295,6 +295,50 @@ PROXY_HOST=<dev-host> PROXY_PORT=8443 sudo ./mitm/pi-redirect.sh
 lists in wire order, both bodies, negotiated cipher, duration. `flows.mitm` is
 the replayable stream for `mitmproxy --rfile`.
 
+## Scripts
+
+| Script | What it answers |
+|---|---|
+| `check-cert.sh LEAF KEY CHAIN` | can this certificate even negotiate? exits non-zero if not |
+| `run.sh` | the proxy alone, for interactive work (`UI=web` for the timeline) |
+| `window-watch.sh [min] [out]` | *will it dial, and what does the rejection look like?* arms the redirect, captures, stops at the first dial |
+| `session.sh [min] [setpoints…]` | *what does the cloud channel carry?* holds the redirect open, presses the cloud at intervals, keeps one flow log for the whole session |
+| `frame.py [F]` / `frame.py --decode HEX` | encode or decode a block-write frame (the write path, below) |
+| `tls-window.py FILE.pcap` | decode a capture into TLS records, both directions |
+| `module-sim.py` | the module's own ClientHello, for testing a server without the device |
+| `udm-redirect.sh`, `pi-redirect.sh`, `mac-redirect.sh` | put the module in path, on the gateway or the host |
+
+`window-watch.sh` and `session.sh` both clean up after themselves whatever
+happens — gateway rules removed, `tcpdump` stopped, setpoint restored — and both
+print the rule count on the way out.
+
+## The write path
+
+The cloud's `setBlockParameter` property carries a block write in the module's own
+framing, and it reproduces exactly:
+
+```
+BD  <cmd=0x40>  <total_len>  <block>  <offset>  <value...>  <crc8>
+```
+
+`total_len` counts the whole frame including the CRC; the CRC is the table
+`ble/icomm_ble.py` already holds. The setpoint is block `0x0B`, offset `0x06`,
+big-endian **1/256 °C**:
+
+```bash
+./mitm/frame.py 122        # BD 40 08 0B 06 32 00 56  — the byte string Ayla sends
+./mitm/frame.py --decode 'BD 40 08 0B 06 30 E4 5E'    # 120.00 F, crc_ok True
+```
+
+Answering `commands.xml` with one of these makes the module apply it — no Ayla
+issuance involved. `mitm/rules-set125.json` is a worked example; it set the tank
+to 125 °F, which Ayla never sent, and the device's next three telemetry posts
+reported `0x33AB` = 125.00 °F:
+
+```bash
+RULES=mitm/rules-set125.json ./mitm/session.sh 5 121
+```
+
 ## Live result, 22 October 2026: the module rejects our certificate
 
 In path at last, on the second attempt and not via ARP — see `udm-redirect.sh`

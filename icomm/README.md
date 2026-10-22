@@ -379,10 +379,29 @@ documented in [`../ble/README.md`](../ble/README.md):
 | 121 °F | 12658 `0x3172` | `BD 40 08 0B 06 31 72 28` |
 | 120 °F | 12516 `0x30E4` | `BD 40 08 0B 06 30 E4 5E` |
 
-The trailing byte varies with the payload (presumed checksum). The `08 0B 06`
-header does **not** match the `ble/` block table — block 13 holds `REMOTE_SETPOINT`
-at offset 2 — so the cloud's framing is related to, but not identical with, the
-BLE one. Worth resolving before hand-writing commands.
+The frame is **the BLE framing exactly**, and it resolves completely:
+
+```
+BD  <cmd=40>  <total_len>  <block>  <offset>  <value...>  <crc8>
+```
+
+* `0xBD` prefix, `0x40` = block write, and **`total_len` counts the whole frame
+  including the CRC** — the same convention as `BD F2 05 01 D8` in `ble/`.
+* `block = 0x0B` (11), `offset = 0x06`. Block 11 is not in `ble/README.md`'s
+  8/13/26/27 table, but that table covers the block-26 iCOMM path; the next-gen
+  layout this module advertises (`host_symname: NextGenHP`) uses blocks 1/2/11/27/28.
+* **the trailing byte is `crc8` over the frame**, using the table already
+  brute-forced into `ble/icomm_ble.py` — no new reverse engineering needed.
+
+Verified by regenerating the three frames the cloud sent, byte-for-byte including
+the CRC, then by building one for a setpoint the cloud never sent:
+`BD 40 08 0B 06 33 AB E2` is 125 °F.
+
+**That frame was then served to the module, and it obeyed.** With a response rule
+answering `commands.xml`, the device acknowledged the write and its next three
+telemetry posts reported `0x33AB` = 125.00 °F — a value Ayla never sent. Writing
+120 °F back through the cloud returned it to `0x30E4` = 120.00 °F. The write path
+is ours: no Ayla issuance, no key recovery, just a TLS endpoint and a CRC.
 
 ### And the telemetry uses the same encoding
 
@@ -391,9 +410,18 @@ it decode with the same 1/256 °C rule, which ties the two sides together:
 
 | Field | Where | Evidence |
 |---|---|---|
-| current setpoint | `block[3]`, offsets **0** and **12** | followed 122 → 121 → 120 °F across successive posts |
-| max setpoint | `block[1]`, offset **86** | `0x418E` = 16782 = 150.0 °F, constant across every post |
-| setpoint repeated | `block[1]`, offsets 80 / 84 / 112 / 114 | held `0x3172` while the setpoint was 121 °F |
+| current setpoint | `block[3]`, offsets **0** and **12** | followed 122 → 121 → 120 → *125 (injected)* → 120 °F |
+| max setpoint | `block[1]`, offset **86** | `0x418E` = 16782 = 150.0 °F, constant |
+| **water temperature** | `block[1]`, offsets **80 / 84 / 112 / 114** (all four identical) | 117 → 117 → 116 → 116 → 115 → 115 °F, independent of the setpoint |
+| Wi-Fi RSSI | `block[4]`, offset **40**, signed 16-bit | −51…−55 dBm across posts, matching `?signal=-54` on the polls |
+| ambient / inlet temperature | `block[4]`, offset **30** | 47.9 → 42.0 → 41.7 → 41.5 °F, drifting like a garage in October |
+| mode | `block[1]`, offsets **89** and **91** | constant `0x08` = `EFFICIENCY`, the app's name for heat-pump mode, matching the entity's `heat_pump` state |
+| tank fullness | `block[3]`, offsets **35** and **39** | constant `100`; never seen changing, so only a candidate |
+| device clock | `block[1]`, offset **70**, 32-bit BE Unix time | advanced with the posts, trailing UTC by ~5 h — the module keeps local time |
+
+Temperatures are `1/256 °C` big-endian throughout. Distinguish the two that look
+alike: `0x2E1C` = 11804 = 46.11 °C = **115.0 °F** is the water, while `0x30E4` =
+120.0 °F is the setpoint. Only the setpoint moves when a write lands.
 
 ## Artifacts
 
