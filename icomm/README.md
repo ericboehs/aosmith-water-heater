@@ -2,9 +2,17 @@
 
 The iCOMM module has two cloud channels and one LAN channel. All of them were
 put under a man-in-the-middle harness from the tank Pi. The result, in one line:
-**the TLS channel validates certificates and rejects a locally-minted CA, and the
-ops channel is a custom encrypted UDP protocol on port 55055 that has no TCP
-fallback.** Neither is a route to local control.
+**the TLS channel accepts any RSA certificate — trust is not checked at all — and
+the ops channel is a custom encrypted UDP protocol on port 55055 with no TCP
+fallback.**
+
+> **Corrected 22 October 2026.** This page first concluded the opposite, that the
+> module validates the chain. It does not: mitmproxy's own throwaway CA completed
+> the handshake and carried application data in clear. What defeated every earlier
+> attempt was the *signature algorithm*, not the CA — the module advertises
+> `ecdsa_sha256` (P-256) but no P-384, and anything signed by the recovered eMudhra
+> intermediate is P-384, which deadlocks the handshake for its full 30 s timeout.
+> See [`../mitm/README.md`](../mitm/README.md) for the pcap and the working recipe.
 
 This note records the method, the five experiments, and the evidence, including
 the steps that failed and the conclusions that were wrong before being corrected.
@@ -223,9 +231,12 @@ the whole window.
 For comparison, the *real* session sends a 262-byte `ClientKeyExchange` and then
 application data. The absence of that message is the whole answer.
 
-**Verdict: certificate chain validation is enforced.** The module does not
-complete a handshake with a CA it does not trust, and it does not send a TLS
-`bad_certificate` alert — it simply resets after about 24 seconds.
+**Verdict at the time: certificate chain validation is enforced.** That reading was
+wrong. mitmproxy's own CA — a root the module cannot hold — later completed the
+handshake and carried application data; the module sends no `bad_certificate` alert
+because it never rejects a certificate. The 24-second reset was the module's 30-second
+handshake timeout expiring on a *signature it could not verify* (P-384), not on a
+trust decision. See [`../mitm/README.md`](../mitm/README.md).
 
 ### Building the path took three fixes
 
@@ -332,12 +343,12 @@ A re-minted RSA-2048 leaf negotiates. The chain is served via the intermediate's
 2002 Comodo/Sectigo root — the one it is known to use for Ayla's own chain —
 rather than an eMudhra root it may never have shipped.
 
-What that correction does not settle is the part only the module can answer:
-the leaf's own signature is `ecdsa-with-SHA384`, so the module must be able to
-verify **one** ECDSA signature even under the AAA cross-sign. A stack that
-offers no ECC key exchange may have been built without ECC verification, in
-which case a correct chain to a trusted root still fails and there is no
-certificate-side fix.
+**Resolved, 22 October 2026:** the answer is that this last doubt was the whole
+problem and the trust store never entered into it. The leaf's own signature is
+`ecdsa-with-SHA384` and the module's `signature_algorithms` extension offers
+`ecdsa_sha256` (P-256) alone — no P-384 scheme — so the leaf is unverifiable
+regardless of which root the chain ends at. An RSA/SHA-256 leaf, from any CA at
+all, works. There is no certificate-side fix needed and no root to chase.
 
 ## Artifacts
 
@@ -350,6 +361,7 @@ Captures on the tank Pi, `~` = `/home/ericboehs`:
 | `icomm_phase3_dns.pcap` | 427 KB | DNS interception attempt (race lost), full TLS handshake + server chain |
 | `icomm_phase4_mitm.pcap` | 329 KB | mitmproxy served its own CA — module resets |
 | `icomm_phase5_pinning.pcap` | 63 KB | correct-name cert, same rejection |
+| `icomm_phase6_window.pcap` | 21 KB | RSA/SHA-256 throwaway CA **accepted**: full handshake, app data in clear |
 
 Also captured but not preserved: the truncated first Phase 1 capture, lost to a
 stale-ownership `Permission denied` on the output file.

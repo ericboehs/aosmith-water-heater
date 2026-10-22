@@ -176,9 +176,14 @@ fi
 echo
 if [ "$fail" -eq 0 ]; then
   echo "VERDICT: negotiable with the module's offer."
-  echo "Still unknown, and only the module can answer it: whether its trust store"
-  echo "contains this chain's root, and whether it can verify the chain's"
-  echo "signature algorithms. Serve it and watch the pcap."
+  echo
+  echo "Negotiable is not the same as accepted, and since 22 October 2026 we know"
+  echo "why. The module does not check the chain at all — mitmproxy's own CA works —"
+  echo "but it can only verify the signature algorithms it advertises:"
+  echo "  rsa_pkcs1_sha256/384/512, rsa_pkcs1_sha1, ecdsa_sha256 (P-256 only)"
+  echo "A P-384 signature, which is everything the recovered eMudhra intermediate"
+  echo "can produce, hangs the handshake for the full 30 s timeout and then resets."
+  echo "Check this certificate's signature algorithm against that list before serving it."
   exit 0
 fi
 echo "VERDICT: cannot be used against this module as-is." >&2

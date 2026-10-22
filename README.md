@@ -268,25 +268,21 @@ gateway, bounded and self-restoring. Two cloud channels exist — an encrypted U
 ops stream on port `55055` to a GCP pool behind `ans-field.aylanetworks.com`, and
 periodic TLS 1.2 to `proxy-ingress-usfield.aylanetworks.com`.
 
-Neither is a route in. The TLS client offers four legacy CBC suites, sends no
-SNI, presents no client certificate, and **validates the chain**: handed a
-certificate from a locally-minted CA — including one carrying the exact expected
-hostname — it acknowledges the certificate, goes silent for about 24 seconds, and
-resets without ever sending a `ClientKeyExchange`. The UDP stream is a separate
-40-byte custom protocol that TLS keys would not open anyway. Whether the module
-also pins is unknown and untestable without a certificate it already trusts.
+The TLS client offers four legacy CBC suites, sends no SNI, presents no client
+certificate — and **does not validate the chain at all.** A certificate from
+mitmproxy's own throwaway CA completes the handshake and carries the session, so
+the cloud protocol can be read in clear locally.
 
-Which root it trusts was settled later, and it narrows the problem to one
-certificate. The chain Ayla serves runs to **Entrust Root Certification
-Authority - G2** (2009), and that is the only root proven present in the module's
-store: cross-signs of the compromised eMudhra intermediates under AAA (Comodo,
-2002) and emSign (2018) were both rejected live, and no Entrust cross-sign
-exists. So what is missing is an **RSA-2048 `*.aylanetworks.com` certificate on
-Ayla's own Entrust-rooted chain** — material we can mint reaches no trusted root,
-and an EC key cannot even be negotiated.
+What defeated the first attempts was the signature algorithm, not the CA. The
+module advertises `rsa_pkcs1_sha256/384/512` and `ecdsa_sha256` (**P-256 only**) —
+no P-384 — and everything signable from the recovered eMudhra intermediate is
+P-384, which deadlocks the handshake for its full 30-second timeout and looks
+exactly like a trust rejection. An RSA-2048, SHA-256 leaf replaces it; no
+procurement required, and no root to chase. The UDP stream is a separate 40-byte
+custom protocol that TLS keys would not open anyway.
 
 [`mitm/README.md`](mitm/README.md) has the measured capability table — cipher
-suites, leaf key type, SNI, chain enforcement, trust store, cadence — each with
+suites, leaf key type, signature algorithm, SNI, cadence, timeouts — each with
 the evidence that establishes it, so none of it has to be re-derived.
 
 [`mitm/`](mitm/README.md) is the harness for that: a reverse proxy that

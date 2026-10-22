@@ -10,6 +10,7 @@ dashboard-ORIGINAL*.json
 # mitm/: the assembled cert bundle carries the private key, and the flow logs are
 # captures of live device traffic.
 mitm/bundle.pem
+mitm/confdir/          # throwaway CA, its key, and the DH group
 mitm/flows.jsonl
 mitm/flows.mitm
 mitm/rules.json

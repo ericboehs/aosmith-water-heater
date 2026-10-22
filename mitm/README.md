@@ -5,6 +5,55 @@ a locally-minted CA. This directory is the harness that terminates that TLS
 channel with a certificate the module should believe, logs what crosses it, and
 can inject responses.
 
+## Result, 22 October 2026: any RSA certificate is accepted
+
+The decisive experiment served mitmproxy's **own throwaway CA** — an RSA-2048 leaf,
+`sha256WithRSAEncryption`, carrying `CN=*.aylanetworks.com`, under a root that is in
+no trust store anywhere. The module completed the handshake and carried the session:
+
+```
+0.008  module  ClientHello (82 B)
+0.096  proxy   ServerHello | Certificate(999 B) | ServerKeyExchange | ServerHelloDone
+5.777  module  ClientKeyExchange | CCS | Finished        <- 5.7 s of DH modexp
+5.785  proxy   CCS | Finished
+5.807  module  app data
+...
+GET  /devices/29689890/commands.xml?signal=-53                          -> 200
+POST /devices/29689890/properties/setBlockParameter/datapoints.xml      -> 200
+POST /devices/29689890/properties/superBlockDyn1/datapoints.xml         -> 200
+```
+
+So this module **does not validate the certificate chain.** The trust store is
+irrelevant; the whole "which root does it hold" question was a red herring.
+
+### Why the eMudhra certificate failed, in the device's own words
+
+The module's ClientHello carries a `signature_algorithms` extension:
+
+```
+rsa_pkcs1_sha512, rsa_pkcs1_sha384, rsa_pkcs1_sha256, ecdsa_sha256 (P-256), rsa_pkcs1_sha1
+```
+
+No P-384 scheme. Every certificate signable from the recovered `EM OV TLS CA - G3C`
+key is signed **P-384** (`ecdsa-with-SHA384`), so the module has no algorithm with
+which to verify it — and the failure is a hang, not a verdict:
+
+```
+ServerHelloDone -> 30.000 s of silence -> RST, no TLS alert, retry every 30 s
+```
+
+An unsupported *root* is accepted; an unsupported *signature algorithm* deadlocks the
+handshake for its full 30-second timeout. That difference is the entire story, and the
+earlier 24.9 s figure was a coarser TCP-level observation of the same timer.
+
+### The working recipe
+
+* any **RSA-2048** leaf, signed **SHA-256**, with a name matching `*.aylanetworks.com` —
+  mitmproxy's default CA is fine, no procurement and no key recovery
+* a **2048-bit** DH group (`<confdir>/mitmproxy-dhparam.pem`; the default is 4096)
+* TLS 1.2 and the module's four legacy suites
+* budget **≥ 15 s**: the session only starts after ~5.7 s of DH exponentiation
+
 ## What the appliance supports, measured
 
 Everything here came off the wire from this unit on 21–22 October 2026. None of it
@@ -20,13 +69,15 @@ establish — re-derive them and you will spend the same evening.
 | Leaf **signature** | may be ECDSA. An RSA-2048 leaf signed `ecdsa-with-SHA384` negotiates normally | our mint |
 | SNI | **absent**, every connection. The certificate must be selected without it | all captures |
 | Client certificate | none requested, none presented | Phase 3 |
-| Chain validation | **enforced.** Untrusted chain gets an ACK for the certificate, 24.9 s of silence, then RST — no TLS alert, no `ClientKeyExchange` | 11 consecutive dials, two chains |
-| Trust store: proven present | **`Entrust Root Certification Authority - G2`** (2009), reached via Ayla's own intermediate | the live ingress chain, which this module validates today |
-| Trust store: rejected | `AAA Certificate Services` (Comodo/Sectigo, 2002) and `emSign ECC Root CA - G3` (2018) — the only two roots reachable from the compromised eMudhra intermediates | live, both chains, identical failure |
-| ECDSA signature verification | **unknown**, and not separable from trust-store absence with anything we can mint | see below |
+| Chain validation | **not enforced.** A leaf from mitmproxy's own throwaway CA — a root it cannot possibly hold — completed the handshake and carried application data | pcap, 22 Oct 2026 |
+| Name check | the leaf that worked carried `CN=*.aylanetworks.com`; whether a mismatched name is rejected has not been tested | pcap |
+| Trust store | **irrelevant in practice.** Ayla's own chain roots at `Entrust Root Certification Authority - G2` (2009), but nothing on this device checks for it | controlled experiment, below |
+| Leaf signature algorithm | must be one it advertises: `rsa_pkcs1_sha256/384/512`, `rsa_pkcs1_sha1`, or `ecdsa_sha256` (**P-256 only**). **P-384 hangs the handshake** | its own `signature_algorithms` extension |
 | Revocation checking | not observable; the module makes no HTTP requests except to Ayla, so it cannot fetch a CRL or an OCSP responder | traffic |
-| Trust store writable? | **no known route**: port 80 serves `regtoken.json` only, there is no shell, and the one writable provisioning path (Same-LAN registration) belongs to A.O. Smith's Ayla OEM account | `portscan2.py`, `lanmode.py` |
-| TLS channel cadence | **event-driven, not polled**. It can have no TCP/443 flow for many minutes, then dial within ~20 s of a cloud-side change | `conntrack` on the gateway; HA property write |
+| Trust store writable? | **no known route**: port 80 serves `regtoken.json` only — a 30-path sweep (`/config`, `/setup`, `/debug`, `/trust.pem`, `/cert.pem`, …) returns the same branded 404 for everything else; there is no shell; the one writable provisioning path (Same-LAN registration) belongs to A.O. Smith's Ayla OEM account | `ble/portscan2.py`, `ble/lanmode.py`, sweep of 22 Oct 2026 |
+| Failure signature | **30.000 s** of silence after `ServerHelloDone`, then RST, no TLS alert, fresh retry every 30 s | pcap |
+| Handshake cost | ~5.7 s between `ServerHelloDone` and `ClientKeyExchange` — RSA-2048 modexp on this CPU. Do not call a 10 s pause a failure | pcap |
+| TLS channel cadence | **event-driven, not polled**, and a press of the cloud (setpoint write) makes it dial in ~10 s | `conntrack`, HA write, three windows |
 
 ### The chain it does trust
 
@@ -51,7 +102,49 @@ That chain is also why mitmproxy needs `upstream-entrust-g2.pem`: mitmproxy ship
 certifi, certifi has dropped Entrust, so a perfectly valid Ayla chain fails
 upstream verification and surfaces as a 502 that looks like the module's fault.
 
+### Pre-flight facts, before anyone orders a certificate
+
+**The leaf the module accepts today is `sha256WithRSAEncryption`, RSA-2048.** That
+settles the question a procurement review will ask: an SHA-1-parity problem does
+not exist here, because this verifier is demonstrably happy with RSA/SHA-256.
+A new RSA/SHA-256 leaf is not going to be rejected on signature grounds.
+
+Those are also the only two signature algorithms that matter, and the module has
+only ever been offered the other one. Everything we can sign from the recovered
+`EM OV TLS CA - G3C` key is **ECDSA**, under every available cross-sign — so no
+experiment so far has actually tested the trust store. The rejection of the AAA
+and emSign chains is *confounded*: RSA/SHA-256 accepted, ECDSA never accepted.
+For a small mbedTLS build that is the expected shape — `MBEDTLS_ECDSA_C` is
+optional, and a device that only ever validates its own RSA chain has no reason
+to include it.
+
+**DH size matters, but not yet.** mbedTLS verifies the `Certificate` message
+before it ever looks at `ServerKeyExchange`, so a DH mismatch cannot be what
+produced the 24.9 s stall. It will matter the moment a trusted RSA leaf exists,
+and there is a real trap:
+
+| | Detail |
+|---|---|
+| mitmproxy's default group | **4096-bit** (`DEFAULT_DHPARAM` in `certs.py`) |
+| 2048-bit group | works, verified with `s_server` and with the proxy |
+| 1024-bit group | refused outright by OpenSSL 3.5/4.0 at its default security level — the handshake dies before a cipher is chosen, which on the wire looks like the client never getting a server flight |
+
+To change it, note that `CertStore.create_store()` **overwrites**
+`<confdir>/mitmproxy-dhparam.pem` when it creates the CA, so the order is:
+start the proxy once to create the confdir, replace that file, then restart.
+
+**Our leaf cannot use static-RSA suites.** Its `keyUsage` is
+`Digital Signature` only, with no `keyEncipherment`, so `RSA-AES128-SHA` and
+`RSA-AES256-SHA` are unusable with it — only the DHE suites are. Any test that
+wants to remove DH from the picture entirely (`RSA-AES128-SHA` has no
+`ServerKeyExchange`) needs the leaf re-minted with `keyEncipherment` first.
+
 ## The two gates, and where they stand
+
+> **Superseded on 22 October 2026.** Gate 2 was not a gate: the module accepts any RSA
+> certificate, trusted or not. Kept because it documents how the wrong hypothesis was
+> reached, and because `check-cert.sh` is still the fast way to prove an offer is
+> negotiable.
 
 **Gate 1 — the leaf key must be RSA. Passed.**
 
