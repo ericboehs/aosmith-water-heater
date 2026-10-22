@@ -233,6 +233,8 @@ tools/price-stream-characterize.py  A/B test: relative shape vs absolute thresho
 homeassistant/cards.py    Lovelace card definitions
 homeassistant/patch_dashboard.py   installs them via the websocket API
 ble/                      iCOMM Bluetooth LE protocol, recovered but a dead end
+icomm/                    iCOMM cloud + LAN channels
+mitm/                     TLS interception harness for the iCOMM cloud channel
 ```
 
 ## The Bluetooth side
@@ -257,6 +259,45 @@ leak sensor remains unreachable by any route.
 
 `ble/` has the scripts, the register tables, and [the full write-up](ble/README.md)
 — everything ruled out, why it is ruled out, and what is left.
+
+## The cloud and LAN side
+
+The module's other channels were mapped from a man-in-the-middle position on the
+tank Pi: a unicast ARP redirect that puts the Pi between the module and the
+gateway, bounded and self-restoring. Two cloud channels exist — an encrypted UDP
+ops stream on port `55055` to a GCP pool behind `ans-field.aylanetworks.com`, and
+periodic TLS 1.2 to `proxy-ingress-usfield.aylanetworks.com`.
+
+Neither is a route in. The TLS client offers four legacy CBC suites, sends no
+SNI, presents no client certificate, and **validates the chain**: handed a
+certificate from a locally-minted CA — including one carrying the exact expected
+hostname — it acknowledges the certificate, goes silent for about 24 seconds, and
+resets without ever sending a `ClientKeyExchange`. The UDP stream is a separate
+40-byte custom protocol that TLS keys would not open anyway. Whether the module
+also pins is unknown and untestable without a certificate it already trusts.
+
+Which root it trusts was settled later, and it narrows the problem to one
+certificate. The chain Ayla serves runs to **Entrust Root Certification
+Authority - G2** (2009), and that is the only root proven present in the module's
+store: cross-signs of the compromised eMudhra intermediates under AAA (Comodo,
+2002) and emSign (2018) were both rejected live, and no Entrust cross-sign
+exists. So what is missing is an **RSA-2048 `*.aylanetworks.com` certificate on
+Ayla's own Entrust-rooted chain** — material we can mint reaches no trusted root,
+and an EC key cannot even be negotiated.
+
+[`mitm/README.md`](mitm/README.md) has the measured capability table — cipher
+suites, leaf key type, SNI, chain enforcement, trust store, cadence — each with
+the evidence that establishes it, so none of it has to be re-derived.
+
+[`mitm/`](mitm/README.md) is the harness for that: a reverse proxy that
+terminates the module's TLS with an `*.aylanetworks.com` certificate, logs every
+flow in clear, and can inject responses. The certificate it needs is an
+**RSA-2048** leaf — the module offers no ECDSA suite, so an EC key cannot be
+negotiated at all. `mitm/check-cert.sh` answers that in one line.
+
+[`icomm/README.md`](icomm/README.md) has the five experiments, the evidence, the
+TLS fingerprint, the captures, and the mistakes that produced wrong conclusions
+along the way.
 
 ## Install
 

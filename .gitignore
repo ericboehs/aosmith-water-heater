@@ -6,3 +6,17 @@ __pycache__/
 dashboard-backup-*.json
 dashboard-proposed.json
 dashboard-ORIGINAL*.json
+
+# mitm/: the assembled cert bundle carries the private key, and the flow logs are
+# captures of live device traffic.
+mitm/bundle.pem
+mitm/flows.jsonl
+mitm/flows.mitm
+mitm/rules.json
+*.pcap
+
+# The interception material is ephemeral. The key must never be committed; the
+# leaf and CSR are regenerable and worthless without it.
+aylanetworks.com.key
+aylanetworks.com.crt
+aylanetworks.com.csr
