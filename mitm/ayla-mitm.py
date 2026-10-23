@@ -21,8 +21,16 @@ which telemetry offsets follow a value and which only drift:
 
     [{"match": {"path_regex": "commands.xml"},
       "each": [{"body": "...148 F..."}, {"body": "...150 F..."}]}]
+
+`echo_headers` copies named request headers back onto the response. Ayla echoes
+`x-Ayla-auth-key` on every reply; whether the module needs that to keep polling is
+an open question, and serving a reply that omits it is one of the differences
+between a synthetic reply and a real one:
+
+    {"action": {"body": "<commands/>", "echo_headers": ["x-Ayla-auth-key"]}}
 """
 
+import asyncio
 import json
 import re
 import time
@@ -33,6 +41,11 @@ from mitmproxy import ctx, http
 # The four suites the module offers. If the negotiated one is not in here the
 # device would have rejected the connection, so a mismatch is a real error.
 MODULE_SUITES = {"DHE-RSA-AES256-SHA", "AES128-SHA", "AES256-SHA"}
+
+# Ayla's own reply to a poll with nothing queued, byte for byte (newline layout
+# included) -- served while a hold times out, so the module sees what it normally
+# sees rather than something novel.
+EMPTY_COMMANDS = "<commands>\n  <properties/>\n  <schedules/>\n  <cmds/>\n</commands>\n"
 
 
 class AylaMITM:
@@ -91,19 +104,73 @@ class AylaMITM:
         ctx.log.info(f"TLS established with module: {cipher}")
 
     # -- http -----------------------------------------------------------
-    def request(self, flow: http.HTTPFlow) -> None:
+    async def request(self, flow: http.HTTPFlow) -> None:
         rule = self._match(flow.request)
         if rule is None:
             return
+        if rule.get("hold"):
+            await self._hold(flow, rule)
+            return
+        self._answer(flow, rule)
+
+    async def _hold(self, flow: http.HTTPFlow, rule: dict) -> bool:
+        """Keep the module's poll open until a command appears, or give up.
+
+        The module only asks for commands when it believes one is waiting, so a
+        cloud stand-in cannot push a write on its own. Holding the poll open
+        turns the module's own request into the push channel: the reply is sent
+        the moment the trigger file has content, which is as close to an instant
+        write as this protocol allows.
+
+        `hold` = {file, timeout, poll_ms, empty}: the file is consumed (truncated)
+        when its contents are served, and an empty reply is sent on timeout so the
+        module does not sit on a dead connection.
+        """
+        cfg = rule["hold"]
+        trigger = Path(cfg["file"]).expanduser()
+        empty = cfg.get("empty", EMPTY_COMMANDS)
+        step = max(0.025, int(cfg.get("poll_ms", 200)) / 1000.0)
+        timeout = float(cfg.get("timeout", 120))
+        start = time.monotonic()
+        deadline = start + timeout
+
+        body = ""
+        while time.monotonic() < deadline:
+            if trigger.exists():
+                body = trigger.read_text().strip()
+                if body:
+                    trigger.write_text("")  # consume, so it is served once
+                    break
+            await asyncio.sleep(step)  # yields to the event loop: other flows keep flowing
+        held = time.monotonic() - start
+
+        self._answer(flow, rule, body=body or empty)
+        ctx.log.info(
+            f"held poll {held:.1f}s, "
+            + ("served a command" if body else f"served an empty reply (timeout {timeout:.0f}s)")
+        )
+        return True
+
+    def _answer(self, flow: http.HTTPFlow, rule: dict, body: str | None = None) -> None:
         action = self._next_action(rule)
-        body = action.get("body", "")
-        if not isinstance(body, str):
-            body = json.dumps(body)
+        if body is None:
+            body = action.get("body", "")
+            if not isinstance(body, str):
+                body = json.dumps(body)
+        headers = dict(action.get("headers", {"Content-Type": "application/json"}))
+        for name in action.get("echo_headers", []):
+            got = flow.request.headers.get(name)
+            if got is not None:
+                headers[name] = got
         flow.response = http.Response.make(
             action.get("status", 200),
             body.encode() if isinstance(body, str) else body,
-            action.get("headers", {"Content-Type": "application/json"}),
+            headers,
         )
+        if action.get("close"):
+            # Hang up instead of keeping the connection alive, to test whether a
+            # dropped connection is what makes the module dial and poll again.
+            flow.response.close_connection = True
         ctx.log.info(
             f"answered from rule: {flow.request.method} {flow.request.path}"
             + (f" (step {rule['_step'] + 1}/{len(rule['each'])})" if rule.get("_each") else "")

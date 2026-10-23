@@ -1,0 +1,27 @@
+[
+  {
+    "match": {
+      "path_regex": "superBlockDyn1"
+    },
+    "action": {
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": "",
+      "close": true
+    }
+  },
+  {
+    "match": {
+      "path_regex": "commands\\.xml"
+    },
+    "action": {
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/xml; charset=utf-8"
+      },
+      "body": "<commands>\n  <properties/>\n  <schedules/>\n  <cmds/>\n</commands>\n"
+    }
+  }
+]

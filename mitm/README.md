@@ -303,6 +303,7 @@ the replayable stream for `mitmproxy --rfile`.
 | `run.sh` | the proxy alone, for interactive work (`UI=web` for the timeline) |
 | `window-watch.sh [min] [out]` | *will it dial, and what does the rejection look like?* arms the redirect, captures, stops at the first dial |
 | `session.sh [min] [setpoints…]` | *what does the cloud channel carry?* holds the redirect open, presses the cloud at intervals, keeps one flow log for the whole session |
+| `ops-block.sh arm\|clear` | drop the encrypted ops channel, to measure what the module does without Ayla's doorbell |
 | `frame.py [F]` / `frame.py --decode HEX` | encode or decode a block-write frame (the write path, below) |
 | `tls-window.py FILE.pcap` | decode a capture into TLS records, both directions |
 | `module-sim.py` | the module's own ClientHello, for testing a server without the device |
@@ -333,6 +334,38 @@ That is also why `each` exists: a rule can hold a *ladder* of responses and serv
 them one per poll, so 149 → 150 → 148 → 150 all happen inside a single window
 without restarting the proxy. With polls this sparse the ladder needs a longer
 window than the values it steps through, which is itself the honest measurement.
+
+## What actually makes the module poll
+
+A write can only be delivered in reply to the module's own `commands.xml` request,
+so this is the whole question for a local stand-in for the cloud. Measured, one
+variable at a time, each window 5–9 minutes:
+
+| What was done | Polls seen |
+|---|---|
+| A cloud-side setpoint write through Ayla (the real one) | **2 of 2 writes polled within seconds** |
+| The first dial after arming the redirect | 1–3 polls in the first 10 s |
+| Nothing — module left alone, ops channel blocked | 1 poll in 7 min; 1 in 2 min; 1 in 9 min |
+| Held the poll open for 240 s, answering late | module went **silent** for the next 5 min |
+| Hung up after every telemetry post (`close: true`) | **no polls** in 181 s |
+| Poll-mode request `commands.xml?polling=1` | arrives, but Ayla answers it in ~100 ms, so it is not a true long-poll |
+
+**Ayla's encrypted operations channel (UDP 55055–55057) is the doorbell.** The
+module is told a command exists, dials, and polls; without that notification it
+falls back to its own irregular timer of minutes. `mitm/ops-block.sh arm|clear`
+drops that channel so the fallback can be measured — always `clear` it afterwards.
+
+Two consequences worth stating plainly, because they decide the shape of any
+local-only integration:
+
+* Holding the poll open does **not** buy a push channel — it starves the module of
+  its telemetry connection instead.
+* Hanging up to force a reconnect does **not** provoke a poll. The polls seen at
+  arm time come from the redirect changing under the module, not from the hangup.
+
+So a local stand-in can be instant for *reads* and is gated to the module's own
+timer for *writes* — minutes, not milliseconds — unless it either imitates the ops
+channel or writes over BLE / CTA-2045, both of which are already local.
 
 ## The write path
 
