@@ -22,6 +22,18 @@ which telemetry offsets follow a value and which only drift:
     [{"match": {"path_regex": "commands.xml"},
       "each": [{"body": "...148 F..."}, {"body": "...150 F..."}]}]
 
+An `inject` rule is the one that keeps the cloud alive. Instead of answering the
+request locally, it lets the request go upstream and rewrites the *response* only
+when there is something to say. Ayla therefore still sees every poll, so the module
+stays online in the cloud and normal cloud writes keep flowing; our frame rides along
+when we have one:
+
+    {"match": {"path_regex": "commands.xml"},
+     "inject": {"file": "/tmp/ayla-cmd.txt"}}
+
+If Ayla's own reply already carries a command, ours is left in the file for the next
+poll — the real cloud wins, which is what you want when a write is in flight.
+
 `echo_headers` copies named request headers back onto the response. Ayla echoes
 `x-Ayla-auth-key` on every reply; whether the module needs that to keep polling is
 an open question, and serving a reply that omits it is one of the differences
@@ -188,6 +200,32 @@ class AylaMITM:
         self.count += 1
         self._print(flow)
         self._log(flow)
+        self._inject(flow)
+
+    def _inject(self, flow: http.HTTPFlow) -> None:
+        """Rewrite an upstream reply with a frame of ours, keeping the round trip.
+
+        Runs after Ayla has answered, so the cloud still records the poll and the
+        module stays online -- the difference between this and a local `action` rule,
+        which answers without ever contacting upstream and makes the device vanish
+        from Ayla for the length of the session.
+        """
+        rule = self._match(flow.request)
+        if not rule or "inject" not in rule:
+            return
+        trigger = Path(rule["inject"]["file"]).expanduser()
+        if not trigger.exists():
+            return
+        body = trigger.read_text().strip()
+        if not body:
+            return
+        upstream = (flow.response.content or b"").decode(errors="replace")
+        if "setBlockParameter" in upstream:
+            ctx.log.info("inject queued: Ayla already has a command, ours waits a poll")
+            return
+        trigger.write_text("")  # consume, so it is served once
+        flow.response.set_content(body.encode())
+        ctx.log.info(f"injected {len(body)}B into the poll reply (upstream still contacted)")
 
     # -- helpers --------------------------------------------------------
     def _match(self, req: http.Request) -> dict | None:

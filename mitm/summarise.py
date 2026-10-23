@@ -3,6 +3,11 @@
 
     ./mitm/summarise.py mitm/flows.jsonl          # timeline + counts + telemetry
     ./mitm/summarise.py FLOWS --timeline          # dials and polls only
+    ./mitm/summarise.py FLOWS --watch             # follow a live session
+
+`--watch` is the one to use while a session is running: it prints a decoded line
+for every telemetry post and for every poll as they land, which turns this into a
+monitor for the read path rather than an after-the-fact report.
 
 Written against what the module actually sends, which is three requests and a
 reply: a telemetry POST to `superBlockDyn1`, a `commands.xml` poll, an empty
@@ -15,6 +20,7 @@ import json
 import pathlib
 import re
 import sys
+import time
 
 TEMP = 1.8 / 256.0
 
@@ -47,11 +53,51 @@ def readings(b: list[bytes]) -> dict:
     return out
 
 
+def watch(path: str, interval: float) -> int:
+    """Print a decoded line per request as the log grows. Ctrl-C to stop."""
+    f = pathlib.Path(path)
+    print(f"  watching {f} (ctrl-c to stop)\n")
+    print("   time    event   setpoint  water top/bottom    mode   watts volts  air")
+    seen = 0
+    t0 = None
+    while True:
+        try:
+            lines = f.read_text().splitlines() if f.exists() else []
+        except OSError:
+            lines = []
+        for line in lines[seen:]:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            t0 = t0 if t0 is not None else r.get("t", time.time())
+            rel = f"+{r.get('t', 0) - t0:5.0f}s"
+            if "superBlock" in r["path"]:
+                b = blocks(r.get("request_body"))
+                if not b:
+                    continue
+                d = readings(b)
+                print(f"  {rel}  telem   {d.get('setpoint', 0):7.1f} F  "
+                      f"{d.get('water_top', 0):6.1f} / {d.get('water_bottom', 0):6.1f} F  "
+                      f"{d.get('mode', '?'):>5}  {d.get('watts', 0):5d} {d.get('volts', 0):4d}  "
+                      f"{d.get('air', 0):5.1f} F", flush=True)
+            elif "commands.xml" in r["path"]:
+                served = "command" if "setBlockParameter" in (r.get("response_body") or "") else "empty"
+                print(f"  {rel}  poll    {served:>32}", flush=True)
+        seen = len(lines)
+        time.sleep(interval)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="summarise a module session's flow log")
     ap.add_argument("flows", nargs="?", default="mitm/flows.jsonl")
     ap.add_argument("--timeline", action="store_true", help="dials and polls only")
+    ap.add_argument("--watch", action="store_true", help="follow the log as it grows")
+    ap.add_argument("--interval", type=float, default=1.0, help="watch poll interval, seconds")
     args = ap.parse_args()
+
+    if args.watch:
+        return watch(args.flows, args.interval)
 
     path = pathlib.Path(args.flows)
     rows = sorted((json.loads(l) for l in path.read_text().splitlines() if l.strip()),

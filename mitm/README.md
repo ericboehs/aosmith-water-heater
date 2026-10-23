@@ -304,6 +304,8 @@ the replayable stream for `mitmproxy --rfile`.
 | `window-watch.sh [min] [out]` | *will it dial, and what does the rejection look like?* arms the redirect, captures, stops at the first dial |
 | `session.sh [min] [setpoints…]` | *what does the cloud channel carry?* arms, **flushes conntrack to force a re-dial**, optionally captures the ops channel (`OPS=1`) or serves frames we built (`INJECT="148 150"`) |
 | `summarise.py FLOWS` | one line per request, then setpoint / water / mode / watts / volts / air / RSSI per telemetry post, and how often it polled |
+| `summarise.py FLOWS --watch` | the same, live: a decoded line per post as it lands — a monitor for the read path |
+| `frame.py --mode electric` | build a mode write (`BD 40 07 1A 00 20 B2`); `--block`/`--offset` to aim it elsewhere |
 | `ops-block.sh arm\|clear` | drop the encrypted ops channel, to measure what the module does without Ayla's doorbell |
 | `frame.py [F]` / `frame.py --decode HEX` | encode or decode a block-write frame (the write path, below) |
 | `tls-window.py FILE.pcap` | decode a capture into TLS records, both directions |
@@ -336,6 +338,60 @@ them one per poll, so 149 → 150 → 148 → 150 all happen inside a single win
 without restarting the proxy. With polls this sparse the ladder needs a longer
 window than the values it steps through, which is itself the honest measurement.
 
+## While armed, the module is invisible to Ayla — and that changes what a session is
+
+Interception is one-way: the module's traffic comes to us instead of Ayla, so Ayla
+stops seeing the device and Home Assistant flips `water_heater.garage` to
+`unavailable` for the duration. Two consequences that cost time to notice:
+
+* A cloud-side write issued mid-session **cannot reach the module**. Its HTTP 200
+  only means Ayla accepted the write; the device never polls Ayla, so the write
+  waits until the redirect is removed. Only an *injected* frame can command the
+  device while armed.
+* So the old idea of "trigger a dial with a cloud write" does not work from inside a
+  session. A trigger is still worth doing — it leaves a real command queued for the
+  moment the session ends — but it will not appear in the capture.
+
+## Keeping the cloud alive while intercepting
+
+The way to inject *without* hiding the device from Ayla is to let the poll go
+upstream and rewrite only the reply — the `inject` rule in the addon, which
+`session.sh` exposes as `INJECT_LIVE`:
+
+```bash
+# poll still reaches Ayla, so the device stays online in the cloud and normal
+# cloud writes keep working; our frame replaces the reply when we push one
+INJECT_LIVE="26:0:20" PUSH_AT=5 ./mitm/session.sh 25
+```
+
+Measured with that in place: Home Assistant stayed `heat_pump` with a live setpoint
+for the whole session, and a cloud write during it was accepted — the opposite of a
+local `action` rule, which answers without contacting upstream and leaves the device
+`unavailable` for the length of the window.
+
+Delivery still needs a poll, and the useful detail is *when* they come: right after
+the conntrack flush the module dials and polls within about 12 s, and after that it
+may not poll again for many minutes. So push early — `PUSH_AT=5`, not 45, or the one
+poll of the window happens before anything is queued.
+
+## An idle module is silent for twenty minutes
+
+Twenty minutes armed, idle tank, no writes, conntrack flushed:
+
+| Observed | Count |
+|---|---|
+| HTTPS requests from the module | **0** |
+| Polls | 0 |
+| Ops keepalives (UDP 55055) | 24, roughly every 80 s |
+| Mode at start and at end | `heat_pump` both times |
+
+So the ops channel keeps ticking while the HTTPS channel stays shut — it is not a
+dial trigger either, which is the second time that idea has failed. And the mode the
+user had set did **not** drift on an idle timer: what reverts it is activity, not
+time. Two reverts (electric → heat_pump, hybrid → heat_pump) both followed a session
+that wrote setpoints, which makes "a setpoint write also reasserts a stored mode"
+the leading hypothesis — untested.
+
 ## Arming is not enough: the module keeps its connection
 
 DNAT only steers *new* connections. The module holds an established one to real
@@ -349,7 +405,9 @@ conntrack -D -s 10.0.1.187 -p tcp --dport 443     # twice, a few seconds apart
 ```
 
 `session.sh` now does this itself, right after it confirms the rules armed, and
-reports how many entries it flushed.
+reports how many entries it flushed. Note that a flush of **0 entries** means the
+module had no connection open at that moment — it was idle and not dialing, which is
+normal and is not the same as the redirect failing.
 
 ## What actually makes the module poll
 
