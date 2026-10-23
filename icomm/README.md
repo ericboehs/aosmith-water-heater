@@ -454,9 +454,12 @@ a watt. A plugin should report `watts = 4500 × (volts/240)²` while `block[4]`
 `block[3]` 30/31 took three attempts and is worth recording as such: called mode,
 then "corrected" to element duty, then put back to mode once the air temperature
 settled it. Element duty and electric mode coincide whenever the tank is heating,
-which is exactly what makes them hard to tell apart — the discriminator is
-`block[4]` 30, because a running heat pump exhausts cold air (41–48 °F) and an
-electric element does not (82–83 °F).
+which is exactly what makes them hard to tell apart. `block[4]` 30 corroborates the
+mode in steady state — a running heat pump exhausts cold air (41–49 °F), an electric
+element does not (82–83 °F) — but it is a **lagging thermal reading, not a mode
+switch**: a post captured immediately after the element stopped still reads 83.2 °F
+in heat-pump mode, falling to 49.0 °F in 47 s. Trust `block[3]` 30/31; use air as
+corroboration only.
 
 The "0% full" the app shows is still not in `block[3]`: those `100` values are the
 tank being physically full of water while holding no hot water.

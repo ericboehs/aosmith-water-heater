@@ -277,9 +277,12 @@ obey it, confirmed from its own telemetry.
 
 **4 — The field map (three readings of the same two bytes).** `b[3]` 30/31 was
 called mode, then corrected to element activity, then put back to mode. What settled
-it: the air sensor. A running heat pump exhausts cold (41–49 °F) and an electric
-element does not (82–83 °F) — the discriminator that separates two fields that
-co-vary whenever the tank is heating. Related errors kept in the docs: `b[1]`
+it: the air sensor. A running heat pump exhausts cold and an electric element does
+not. **Partially retracted later**: air separates the modes only in steady state —
+it is a lagging thermal reading, and a heat-pump-mode post taken right after the
+element stopped still reads 83.2 °F, falling to 49.0 °F within 47 s. The register is
+the authority; air corroborates it only when the unit has settled. The test suite
+built for the shipping relay caught this. Related errors kept in the docs: `b[1]`
 6–12 are zeros that *read as* 32.0 °F, which is how a wrong mode field got picked;
 the `100`s in `b[3]` 35/39 are physical tank fullness, not hot-water availability.
 
@@ -326,7 +329,7 @@ normal. Local-first, cloud-preserving, degrade-gracefully: [PLUGIN.md](PLUGIN.md
 
 - **One variable per window.** Every claim above is a diff between two windows that
   differ in exactly one thing. The element-on/element-off pair located watts; the
-  air-temperature discriminator settled mode.
+  air-temperature reading corroborated mode (as a lagging signal, not a switch).
 - **Wrong turns are kept, corrected in public.** Each wrong claim above was
   committed, then retracted with the measurement that killed it and the reason it
   looked right. The root causes are documented (zeros reading as 32.0 °F, a poll
