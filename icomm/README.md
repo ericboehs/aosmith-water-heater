@@ -418,6 +418,20 @@ it decode with the same 1/256 °C rule, which ties the two sides together:
 | air at the unit | `block[4]`, offset **30** | 41–48 °F while the heat pump ran, 82–83 °F in electric mode |
 | Wi-Fi RSSI | `block[4]`, offset **40**, signed 16-bit | −51…−55 dBm, matching `?signal=-54` on the polls |
 | device clock | `block[1]`, offsets **70–73**, 32-bit BE Unix time | advanced 4.2 h between two sessions, matching the wall clock |
+| **electric element power** | `block[4]`, offsets **12–13**, 16-bit BE watts | `0x1194` = **4500** while the element heats, `0` when idle — the element's rated figure |
+| **line voltage** | `block[1]`, offset **99**, whole volts | 235, drifting to 236 |
+| element duty | `block[3]`, offsets **30** and **31** | `100` / `1` while heating, `0` / `5` while idle |
+
+**Where the app's "4315 W" comes from.** Not a measured field: 4500 W is the
+element rating at 240 V, and a resistive element follows P ∝ V², so at the 235 V
+this unit actually sees, `4500 × (235/240)² = 4314 W` — the app's number to within
+a watt. A plugin should report `watts = 4500 × (volts/240)²` while `block[4]`
+12–13 is non-zero, and 0 otherwise.
+
+Two earlier claims die here as well: `block[3]` 30/31 is not a mode field, it is
+element activity (100/1 heating, 0/5 idle), and the "0% full" the app shows is not
+in `block[3]` at all — those `100` values are the tank being physically full of
+water while holding no hot water.
 
 **Corrections, kept because they were wrong in public.** Mode is *not* at
 `block[1]` 89/91 — that byte reads `0x08` in both heat-pump and electric mode, so

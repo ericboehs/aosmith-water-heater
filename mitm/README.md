@@ -350,22 +350,42 @@ variable at a time, each window 5–9 minutes:
 | Hung up after every telemetry post (`close: true`) | **no polls** in 181 s |
 | Poll-mode request `commands.xml?polling=1` | arrives, but Ayla answers it in ~100 ms, so it is not a true long-poll |
 
-**Ayla's encrypted operations channel (UDP 55055–55057) is the doorbell.** The
-module is told a command exists, dials, and polls; without that notification it
-falls back to its own irregular timer of minutes. `mitm/ops-block.sh arm|clear`
-drops that channel so the fallback can be measured — always `clear` it afterwards.
+**Nothing in-band prompts a poll sooner.** The module dials the ingress on a
+**60-second cadence** of its own (two dials at 19:51:16 and 19:52:16, neither
+within 15 s of a cloud-side write) and polls `commands.xml` on a slower,
+irregular timer of minutes. An earlier draft of this file called the ops channel
+"the doorbell" on the strength of a poll that turned out to *precede* its write by
+four seconds; that was correlation read backwards, and it is wrong.
 
-Two consequences worth stating plainly, because they decide the shape of any
-local-only integration:
-
-* Holding the poll open does **not** buy a push channel — it starves the module of
-  its telemetry connection instead.
-* Hanging up to force a reconnect does **not** provoke a poll. The polls seen at
-  arm time come from the redirect changing under the module, not from the hangup.
+Holding the poll open does **not** buy a push channel — it starves the module of
+its telemetry connection instead. Hanging up to force a reconnect does **not**
+provoke a poll either: the polls seen at arm time come from the redirect changing
+under the module, not from the hangup.
 
 So a local stand-in can be instant for *reads* and is gated to the module's own
-timer for *writes* — minutes, not milliseconds — unless it either imitates the ops
-channel or writes over BLE / CTA-2045, both of which are already local.
+timer for *writes* — minutes, not milliseconds. The only fast write paths are BLE
+and CTA-2045, both already local.
+
+## The ops channel, decoded: a rolling nonce, not a command path
+
+Captured on the gateway — `tcpdump -i br0` is the interface that sees the module's
+VLAN; `switch0` and `eth9` see nothing of it, which cost an empty capture to learn.
+
+```
+04 00 00 00 3f b8 0f 00 | <16 bytes> | <16 bytes>          40 bytes, fixed
+```
+
+Six packets in two minutes, all exactly 40 bytes, all to `34.70.101.46:55055`
+(`ans-field.aylanetworks.com` rotates; the DNS answer at capture time was a
+different host). Header `0x000fb83f` = 1030207 constant throughout. The two 16-byte
+blocks chain **per direction**: each side sends back its own previous second block
+as its next first block, with a fresh random block appended.
+
+So it is **neither signed nor encrypted**, and there is nowhere for a command to
+hide: 40 bytes of fixed size leaves no room for both a nonce and a MAC, let alone a
+payload. No packet at all appeared within 15 s of a cloud-side write. It is a
+liveness/rolling-token keepalive — decoding it further buys nothing, and it is not
+the route to instant writes.
 
 ## The write path
 
