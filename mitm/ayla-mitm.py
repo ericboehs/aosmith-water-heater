@@ -220,9 +220,12 @@ class AylaMITM:
         if not body:
             return
         upstream = (flow.response.content or b"").decode(errors="replace")
-        if "setBlockParameter" in upstream:
+        prefer_ours = rule["inject"].get("prefer") == "ours"
+        if "setBlockParameter" in upstream and not prefer_ours:
             ctx.log.info("inject queued: Ayla already has a command, ours waits a poll")
             return
+        if "setBlockParameter" in upstream:
+            ctx.log.info("inject overrode Ayla's pending command (prefer=ours)")
         trigger.write_text("")  # consume, so it is served once
         flow.response.set_content(body.encode())
         ctx.log.info(f"injected {len(body)}B into the poll reply (upstream still contacted)")

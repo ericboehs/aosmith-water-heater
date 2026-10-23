@@ -62,6 +62,7 @@ INJECT=${INJECT:-}
 # locally and makes the device invisible to Ayla for the length of the session.
 INJECT_LIVE=${INJECT_LIVE:-}
 PUSH_AT=${PUSH_AT:-0}
+PREFER=${PREFER:-ayla}   # "ours" serves our frame even when Ayla has a command queued
 TRIGGER=${TRIGGER:-/tmp/ayla-cmd.txt}
 RULES=${RULES:-mitm/rules-none.json}
 
@@ -136,7 +137,7 @@ trap cleanup EXIT INT TERM
 [ -n "${HOME_ASSISTANT_TOKEN:-}" ] && HA_TOKEN_SET=1
 START=$(date +%s)
 if [ -n "$INJECT_LIVE" ]; then
-  python3 - "$INJECT_LIVE" "$TRIGGER" <<'PYI'
+  python3 - "$INJECT_LIVE" "$TRIGGER" "$PREFER" <<'PYI'
 import importlib.util, json, pathlib, sys
 spec = importlib.util.spec_from_file_location("frame", "mitm/frame.py")
 frame = importlib.util.module_from_spec(spec); spec.loader.exec_module(frame)
@@ -144,7 +145,7 @@ b, o, hexv = sys.argv[1].split(":")
 wire = frame.encode(int(b, 0), int(o, 0), bytes.fromhex(hexv)).hex(" ").upper()
 pathlib.Path("/tmp/session-live.json").write_text(json.dumps(
     [{"match": {"path_regex": "commands\\.xml"},
-      "inject": {"file": sys.argv[2]}}], indent=2) + "\n")
+      "inject": {"file": sys.argv[2], "prefer": sys.argv[3]}}], indent=2) + "\n")
 pathlib.Path("/tmp/session-live-frame.xml").write_text(frame.commands_xml(wire))
 print(f"  live injection: block {int(b,0)} offset {int(o,0)} <- {hexv}  ({wire})")
 PYI

@@ -369,6 +369,10 @@ for the whole session, and a cloud write during it was accepted — the opposite
 local `action` rule, which answers without contacting upstream and leaves the device
 `unavailable` for the length of the window.
 
+`PREFER=ours` inverts the arbitration: our frame replaces Ayla's even when the cloud
+has a command queued. That is the only way to inject *into* a poll that exists because
+a real command is waiting, so use it when testing a frame the cloud cannot produce.
+
 Delivery still needs a poll, and the useful detail is *when* they come: right after
 the conntrack flush the module dials and polls within about 12 s, and after that it
 may not poll again for many minutes. So push early — `PUSH_AT=5`, not 45, or the one
