@@ -166,11 +166,12 @@ Measured, one variable per window:
   occurred while attempting to communicate with your water heater" (its generic
   queued-but-never-acknowledged). The cure is un-intercepted time on real Ayla.
 - **Mode writes**: A.O. Smith's GraphQL `updateMode` queues at Ayla, the module
-  polls within ~2 min and fetches `BD 40 08 0B 0F <pair> <crc8>` — block 11
-  offset 15, the same two bytes the telemetry reports at `b[3]` 30/31. Local
-  injection of the same frame flips the appliance within seconds (measured:
-  electric `64 01`, heat pump `00 05`). The BLE map's block-26 MODE register is
-  acked and ignored over the cloud — the two maps are different atlases.
+  polls within seconds to ~2 min and fetches `BD 40 08 0B 0F <pair> <crc8>` —
+  block 11 offset 15, the same two bytes the telemetry reports at `b[3]` 30/31.
+  All three modes are captured: electric `64 01`, hybrid `00 04`, heat pump
+  `00 05` — and local injection of the same frames flips the appliance within
+  seconds. The BLE map's block-26 MODE register is acked and ignored over the
+  cloud — the two maps are different atlases.
 - **Single-seat sessions**: the A.O. Smith account allows one active session. HA's
   integration keeps re-taking it — the mobile app gets logged out immediately, and
   a direct script's write got 401 twice, including after a fresh login, while its
@@ -335,7 +336,6 @@ normal. Local-first, cloud-preserving, degrade-gracefully: [PLUGIN.md](PLUGIN.md
 
 | Question | Why it matters |
 |---|---|
-| hybrid's mode byte-pair | electric `64 01` and heat pump `00 05` are captured (block 11 offset 15); hybrid's pair has not been delivered yet |
 | What triggers a poll at all? | write latency; nothing found yet that provokes one |
 | Where does the app's hot-water % come from? | a read-only plugin ships without it |
 | Can BLE pairing be satisfied by anyone but the OEM account? | the only instant write path |

@@ -41,13 +41,13 @@ OFFSET_SETPOINT = 0x06
 # block 11 (the same block as the setpoint, offset 6) at OFFSET 15, two bytes --
 # and they are exactly the b[3] 30/31 pair the telemetry reports as mode.
 #   electric  -> 64 01  (100, 1)     BD 40 08 0B 0F 64 01 34
-#   heat_pump -> 00 05  (0,   5)     BD 40 08 0B 0F 00 05 4A
-# hybrid's pair is still uncaptured. The BLE map's MODE at block 26 offset 0
+#   hybrid    -> 00 04  (0,   4)     BD 40 08 0B 0F 00 04 14
+#   heat_pump -> 00 05  (0,   5)     BD 40 08 0B 0F 00 05 4A The BLE map's MODE at block 26 offset 0
 # (ELECTRIC=32, HYBRID=16, EFFICIENCY=8) is a DIFFERENT register: over the cloud
 # it is acknowledged and ignored -- measured twice.
 MODE_BLOCK = 0x0B
 MODE_OFFSET = 0x0F
-MODES = {"electric": b"\x64\x01", "heat_pump": b"\x00\x05"}
+MODES = {"electric": b"\x64\x01", "hybrid": b"\x00\x04", "heat_pump": b"\x00\x05"}
 
 
 def _crc8():

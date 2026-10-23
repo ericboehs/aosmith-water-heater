@@ -405,12 +405,13 @@ Ayla deliver actual mode commands (written through A.O. Smith's GraphQL,
 | mode | frame | register |
 |---|---|---|
 | electric | `BD 40 08 0B 0F 64 01 34` | block 11 **offset 15**, bytes `64 01` |
+| hybrid | `BD 40 08 0B 0F 00 04 14` | block 11 **offset 15**, bytes `00 04` |
 | heat_pump | `BD 40 08 0B 0F 00 05 4A` | block 11 **offset 15**, bytes `00 05` |
 
 Block 11 is the control block: offset 6 is the setpoint, offset 15 the mode — and
 the mode bytes are exactly the `b[3]` 30/31 pair the telemetry reports, so the
-read field and the write register are the same two bytes. hybrid's pair is still
-uncaptured.
+read field and the write register are the same two bytes. All three modes
+captured: electric `64 01`, hybrid `00 04`, heat pump `00 05`.
 
 **Mode control is local, then, and proven end to end.** With `frame.py --mode
 electric` served through the relay on a poll, the appliance switched to electric

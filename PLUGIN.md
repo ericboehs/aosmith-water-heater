@@ -62,54 +62,66 @@ flowchart LR
 | 13 | **Observability** | prototype | JSONL flow log, TLS-window decoder, summariser, all in `mitm/`. Cheap to keep, valuable when debugging a flaky cloud. |
 | 14 | **Packaging** | not started | HA add-on: one container, config for device id and cert, DNS override documented. |
 
-## Resilience, since Ayla is unreliable
+## Resilience, since Ayla is unreliable — and the appliance has failure modes of its own
 
 The failure mode to avoid is the one seen tonight: **the device backs off for
-minutes when its cloud connection misbehaves, and nothing wakes it early.** Blocking
-its ops channel did not wake it; hanging up did not; a cloud write did not when it
-was idle. Backoff is expensive, so the relay must never hand the device a failure it
-could have absorbed.
+minutes when its cloud connection misbehaves, and nothing wakes it early.**
+Blocking its ops channel did not wake it; hanging up did not; a cloud write did
+not when it was idle. Backoff is expensive, so the relay must never hand the
+device a failure it could have absorbed.
 
-Proposed behaviour, per request:
+### Delivery: the doorbell recipe
 
-1. **Upstream budget.** Forward with a short timeout (tens of seconds, measured to
-   be enough — Ayla answers in ~100 ms when healthy). Never let the device sit on an
-   open request the way Home Assistant's integration did for 90 s.
-2. **Degrade locally on failure.** On timeout or 5xx: answer telemetry POSTs with a
-   synthetic `200` and stash the payload, and answer polls with an empty
-   `<commands/>` (or a queued command of ours). The device sees a healthy cloud.
-3. **Circuit breaker.** After N consecutive failures, stop waiting on upstream
-   entirely for a cooldown, with a cheap health probe in the background. This keeps
-   local reads and local writes working *while Ayla is down*, which is the whole
-   point of being local.
-4. **Buffer, then decide.** Telemetry collected while degraded is journaled locally.
-   On recovery either replay it (Ayla timestamps it at POST time, so history shifts)
-   or keep it local-only. That is a product decision, not a technical one, and it
-   should be configurable.
-5. **Idempotent commands.** A queued frame must be delivered exactly once, and must
-   survive a reconnect. Frames are consumed from a file today; that needs a real
-   queue with an acknowledgement from the device's own telemetry.
-6. **Recovery is passive.** The module re-dials on its own; the relay does not need
-   to poke it. Verify by watching for the next telemetry, not by forcing a dial.
+Writes are only ever delivered in reply to the module's own poll, and the module
+polls when Ayla tells it something is queued. So the standard write sequence is:
 
-Two open questions that shape this block: whether Ayla treats the device as offline
-when polls stop reaching it (strongly implied — HA showed `unavailable` in
-local-answer mode), and whether the module's backoff can be shortened at all.
+1. queue our frame in the relay;
+2. ring the doorbell — a harmless, in-range setpoint write through the account,
+   which queues a command at Ayla and provokes a poll within seconds;
+3. `PREFER=ours` replaces that reply with our frame.
 
-## Measured tonight, which sharpens two blocks
+Measured: doorbell-to-delivery ~17–25 s while the tank is active. Without the
+doorbell, an active tank still polls often enough for writes to land in seconds;
+an idle one may not poll for many minutes, which is when the doorbell earns its
+keep. The account is optional — pure-local installs just wait for a natural poll.
 
-* **Ayla's own write path can hang indefinitely.** Home Assistant's
-  `set_temperature` returned nothing after 40–90 s, three times, while reads on the
-  same integration answered in 19 ms — and a full HA core restart did not fix it.
-  That is the integration blocked on an Ayla call that never returns. A local plugin
-  that delegates writes to the cloud inherits exactly this failure, which is the
-  strongest argument for owning the write path locally.
-* **The module goes quiet for far longer than any timeout.** Twenty minutes with the
-  relay armed, no writes, idle tank: zero HTTPS requests. Later, while its compressor
-  was running, still zero. Its own backoff, after every connection we broke today,
-  is measured in many minutes, and nothing short of time cleared it. So a local write
-  path must tolerate "the device will collect this when it feels like it", which means
-  a durable queue rather than a request that can fail.
+### Degraded state: detect it, stop injecting, tell the human
+
+After enough broken connections the module stops listening, and its conversation
+shape gives it away. The relay can watch for all of these:
+
+| Symptom | Healthy | Degraded |
+|---|---|---|
+| requests per dial | 2+ (telemetry, poll) | exactly 1 telemetry POST |
+| connection duration | holds while active | ~26 s, every dial |
+| polls while heating | frequent | none |
+| ops keepalives (UDP) | ~every 80 s | absent |
+| GraphQL writes | accepted | "an error occurred while attempting to communicate with your water heater" |
+
+In that state injections starve silently — the response is to **stop queueing,
+alert, and wait or escalate**. Time sometimes cures it (measured once: 26.6 min);
+the reliable cure is the breaker flip, which the appliance's own error message
+suggests. Post-flip it re-registers and fetches everything Ayla had queued, so
+nothing is lost. The add-on should surface "flip the breaker" as its remediation
+rather than retrying forever.
+
+### The other failure modes, folded in
+
+* **A failed write can still be queued.** A.O. Smith's six-attempt retry ladder
+  lands writes minutes or hours after the call errored — a 138 °F write from a
+  "failed" call arrived on the reboot poll. Never conclude anything from a GraphQL
+  error; verify from telemetry, and expect surprise deliveries.
+* **Single-seat sessions.** The account allows one live session; HA's integration
+  re-takes it and 401s everyone else — the mobile app gets logged out, a script's
+  writes fail after a fresh login. The relay never needs the account; if the
+  doorbell feature uses it, expect the fight and coordinate with HA (or accept
+  doorbell latency).
+* **Black-hole hazard.** DNAT armed against a dead proxy is worse than no cloud at
+  all — the module dials into nothing and goes dark. The add-on must health-check
+  its own TLS listener and tear the steering rules down the moment it dies.
+* **Recovery is passive.** The module re-dials on its own; the relay never pokes it
+  awake (every wake-up idea tried — ops block, hangup, hold — failed). Verify by
+  watching for the next telemetry, not by forcing a dial.
 
 ## What must be true before building
 
