@@ -73,10 +73,18 @@ The module's ClientHello is a 2013-era fingerprint:
   `rsa_pkcs1_sha1` — **no P-384 scheme anywhere**;
 - extensions: `encrypt_then_mac`, `extended_master_secret`.
 
-The finding that unlocked everything: **any RSA-2048 leaf signed with SHA-256 and
-named `*.aylanetworks.com` completes the handshake and the module sends application
-data** — including mitmproxy's throwaway self-signed CA. There is no trust store
-consulted at all.
+The finding that unlocked everything: **any RSA-2048 leaf signed with SHA-256
+completes the handshake and the module sends application data** — including
+mitmproxy's throwaway self-signed CA. There is no trust store consulted at all.
+
+The certificate's *identity* is not checked either. The `*.aylanetworks.com` name
+carried by every successful handshake was never tested on its own until the relay
+existed; an isolated swap to `CN=garbage.example` with **no SAN extension at all**
+(same key size, same signature algorithm, same listener) was accepted on the first
+handshake, telemetry decoded, and a queued command was retrieved through it. So
+the name is a convention that makes a capture look plausible, nothing more. What
+*does* constrain the certificate is the key type: RSA/SHA-256 works, ECDSA/P-384
+deadlocks.
 
 The trap that occupied an evening first: an eMudhra-origin ECDSA **P-384** leaf
 (copied from Ayla's live cert) does not fail — it **deadlocks**. The module goes
