@@ -302,7 +302,8 @@ the replayable stream for `mitmproxy --rfile`.
 | `check-cert.sh LEAF KEY CHAIN` | can this certificate even negotiate? exits non-zero if not |
 | `run.sh` | the proxy alone, for interactive work (`UI=web` for the timeline) |
 | `window-watch.sh [min] [out]` | *will it dial, and what does the rejection look like?* arms the redirect, captures, stops at the first dial |
-| `session.sh [min] [setpoints…]` | *what does the cloud channel carry?* holds the redirect open, presses the cloud at intervals, keeps one flow log for the whole session |
+| `session.sh [min] [setpoints…]` | *what does the cloud channel carry?* arms, **flushes conntrack to force a re-dial**, optionally captures the ops channel (`OPS=1`) or serves frames we built (`INJECT="148 150"`) |
+| `summarise.py FLOWS` | one line per request, then setpoint / water / mode / watts / volts / air / RSSI per telemetry post, and how often it polled |
 | `ops-block.sh arm\|clear` | drop the encrypted ops channel, to measure what the module does without Ayla's doorbell |
 | `frame.py [F]` / `frame.py --decode HEX` | encode or decode a block-write frame (the write path, below) |
 | `tls-window.py FILE.pcap` | decode a capture into TLS records, both directions |
@@ -334,6 +335,21 @@ That is also why `each` exists: a rule can hold a *ladder* of responses and serv
 them one per poll, so 149 → 150 → 148 → 150 all happen inside a single window
 without restarting the proxy. With polls this sparse the ladder needs a longer
 window than the values it steps through, which is itself the honest measurement.
+
+## Arming is not enough: the module keeps its connection
+
+DNAT only steers *new* connections. The module holds an established one to real
+Ayla, so arming the redirect can leave a session with no traffic at all — measured:
+six armed minutes with a cloud write produced **zero requests**. What fixes it is
+dropping the module's conntrack entries, which makes its next packet look like a
+new flow, get DNAT'd mid-stream and break the connection:
+
+```bash
+conntrack -D -s 10.0.1.187 -p tcp --dport 443     # twice, a few seconds apart
+```
+
+`session.sh` now does this itself, right after it confirms the rules armed, and
+reports how many entries it flushed.
 
 ## What actually makes the module poll
 
