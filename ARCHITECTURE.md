@@ -229,8 +229,9 @@ module ──DNAT/SNAT──▶ relay ──forward──▶ Ayla ingress
 - **Rewrite, don't originate.** Commands are only ever delivered as the *reply* to
   the module's own poll; the relay cannot push. This keeps the protocol shape the
   module expects.
-- **Steering**: one DNS override for the ingress hostname beats everything (ARP
-  wedges this module; DNAT needs gateway rights plus the conntrack flush).
+- **Steering**: gateway DNAT+SNAT with a conntrack flush. A DNS override does
+  **not** work — the module queries 1.1.1.1 directly for its endpoints, ignoring
+  the gateway's resolver entirely (measured on the wire). ARP wedges this module.
 - **Degradation is the product requirement**: Ayla is often down or slow — a
   Home Assistant write hung for 90 s three times in one night while reads answered
   in 19 ms. The relay must answer the *module* locally when upstream fails, so the

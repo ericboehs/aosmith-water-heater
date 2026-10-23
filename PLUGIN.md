@@ -47,7 +47,7 @@ flowchart LR
 
 | # | Block | Status | Evidence / notes |
 |---|---|---|---|
-| 1 | **Path steering** | prototype | One DNS override for `proxy-ingress-usfield.aylanetworks.com` beats DNAT. ARP wedges this module. DNAT works but needs gateway rights and a conntrack flush. |
+| 1 | **Path steering** | proven | Gateway DNAT+SNAT plus a conntrack flush. **DNS override does not work**: the module resolves its endpoints with 1.1.1.1 directly, ignoring the gateway's DNS — measured on the wire. ARP wedges this module. |
 | 2 | **Existing-connection handling** | proven | DNAT only steers *new* connections; the module holds one open. `conntrack -D -s <module> -p tcp --dport 443` forces a re-dial. Without it: six armed minutes, zero requests. |
 | 3 | **TLS termination** | proven | The module accepts **any** RSA-2048/SHA-256 leaf named `*.aylanetworks.com`; it never validates the chain. A self-signed cert is enough. A P-384/ECDSA leaf deadlocks the handshake silently for 30 s — the trap. |
 | 4 | **Relay / forward-with-overrides** | prototype | Pass-through by default; `inject`, `hold`, `close`, `each`, `echo_headers` and local-answer rules exist in `mitm/ayla-mitm.py`. Only `inject` preserves the cloud view. |
