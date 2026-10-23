@@ -37,14 +37,17 @@ BLE_MODULE = HERE.parent / "ble" / "icomm_ble.py"
 BLOCK_SETPOINT = 0x0B
 OFFSET_SETPOINT = 0x06
 
-# ble/README.md's next-gen map document block 26 offset 0 as MODE, with the values
-# the app uses. The cloud channel has its own map -- the setpoint goes to 11/6
-# rather than the BLE map's 13/2 -- so whether 26/0 is honoured over the cloud is
-# exactly the open question this encoder is here to answer.
-BLOCK_MODE_BLE = 0x1A
-OFFSET_MODE_BLE = 0x00
-MODES = {"smart": 1, "standard": 2, "vacation": 4, "efficiency": 8,
-         "heat_pump": 8, "hybrid": 16, "eco": 16, "electric": 32}
+# The cloud's MODE register, captured 23 October 2026 from Ayla's own deliveries:
+# block 11 (the same block as the setpoint, offset 6) at OFFSET 15, two bytes --
+# and they are exactly the b[3] 30/31 pair the telemetry reports as mode.
+#   electric  -> 64 01  (100, 1)     BD 40 08 0B 0F 64 01 34
+#   heat_pump -> 00 05  (0,   5)     BD 40 08 0B 0F 00 05 4A
+# hybrid's pair is still uncaptured. The BLE map's MODE at block 26 offset 0
+# (ELECTRIC=32, HYBRID=16, EFFICIENCY=8) is a DIFFERENT register: over the cloud
+# it is acknowledged and ignored -- measured twice.
+MODE_BLOCK = 0x0B
+MODE_OFFSET = 0x0F
+MODES = {"electric": b"\x64\x01", "heat_pump": b"\x00\x05"}
 
 
 def _crc8():
@@ -82,10 +85,10 @@ def encode_setpoint(fahrenheit: float) -> bytes:
     return encode(BLOCK_SETPOINT, OFFSET_SETPOINT, bytes([q >> 8, q & 0xFF]))
 
 
-def encode_mode(mode: str, block: int = BLOCK_MODE_BLE, offset: int = OFFSET_MODE_BLE) -> bytes:
+def encode_mode(mode: str, block: int = MODE_BLOCK, offset: int = MODE_OFFSET) -> bytes:
     if mode.lower() not in MODES:
         raise ValueError(f"unknown mode {mode!r}; try {sorted(MODES)}")
-    return encode(block, offset, bytes([MODES[mode.lower()]]))
+    return encode(block, offset, MODES[mode.lower()])
 
 
 def decode(frame: bytes) -> dict:
@@ -125,7 +128,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="encode/decode the module's block-write frames")
     ap.add_argument("setpoint", nargs="?", type=float, help="setpoint in F, to encode")
     ap.add_argument("--decode", metavar="HEX", help="frame to decode, e.g. 'BD 40 08 0B 06 30 E4 5E'")
-    ap.add_argument("--mode", metavar="NAME", help=f"mode write frame: {', '.join(sorted(MODES))}")
+    ap.add_argument("--mode", metavar="NAME", help=f"mode write frame: {', '.join(sorted(MODES))} (cloud register, block 11 offset 15)")
     ap.add_argument("--block", type=lambda v: int(v, 0), help="with --mode: block number (default 26)")
     ap.add_argument("--xml", action="store_true", help="emit the commands XML body for the inject file")
     ap.add_argument("--offset", type=lambda v: int(v, 0), help="with --mode: offset (default 0)")
@@ -145,7 +148,7 @@ def main() -> int:
         if args.xml:
             print(commands_xml(frame.hex(" ").upper()), end="")
             return 0
-        print(f"  mode {args.mode} = {MODES[args.mode.lower()]}  ->  {frame.hex(' ').upper()}")
+        print(f"  mode {args.mode} = {MODES[args.mode.lower()].hex(' ').upper()}  ->  {frame.hex(' ').upper()}")
         print(f"  decoded: {decode(frame)}")
         return 0
 

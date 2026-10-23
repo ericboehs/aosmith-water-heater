@@ -56,7 +56,7 @@ flowchart LR
 | 7 | **Write path A — cloud poll injection** | proven for setpoint | Serve a frame as the reply to `commands.xml`. 125 °F and 148 °F were applied and confirmed from telemetry. Latency = time to next poll: **minutes**, and polls are rare. |
 | 8 | **Write path B — BLE** | prototype, unproven here | `ble/` already writes registers directly and is instant. Pairing is the friction. This is the only known route to sub-second writes. |
 | 9 | **Write path C — through Ayla** | proven, fragile | What Home Assistant's `aosmith` integration does. Correct semantics, but fails when Ayla is slow: a service call hung for 90 s tonight. |
-| 10 | **Mode control** | **unknown** | `ble/README.md` documents MODE as block 26 offset 0 (`ELECTRIC=32`, `HYBRID=16`, `EFFICIENCY=8`). Whether the *cloud* channel honours 26/0 is untested — delivery never happened, for lack of a poll. |
+| 10 | **Mode control** | **proven local** | Cloud register captured from Ayla's own deliveries: block 11 offset 15, two bytes (`electric 64 01`, `heat_pump 00 05`). Injecting our own frame flips the appliance in seconds — electric applied and confirmed from telemetry, heat pump restored. hybrid's pair uncaptured. The BLE map's block 26/0 is acked-and-ignored. |
 | 11 | **State readout for HA** | prototype | `mitm/summarise.py` prints it; turning it into MQTT or HA state is straightforward. |
 | 12 | **Resilience** | **not built** | The owner's explicit requirement. See below — this is the block with real design work in it. |
 | 13 | **Observability** | prototype | JSONL flow log, TLS-window decoder, summariser, all in `mitm/`. Cheap to keep, valuable when debugging a flaky cloud. |
@@ -113,10 +113,6 @@ local-answer mode), and whether the module's backoff can be shortened at all.
 
 ## What must be true before building
 
-* **Mode write over the cloud**: does block 26 offset 0 work through
-  `setBlockParameter`, or does the cloud map differ from the BLE map the way the
-  setpoint does (11/6 rather than 13/2)? Until this is answered, mode control is
-  BLE-only.
 * **Poll cadence**: what makes the module poll? Today: mostly nothing. A poll is
   what delivers a queued command, so write latency depends on this. If it cannot be
   influenced, path A is best-effort and path B (BLE) is the real control channel.

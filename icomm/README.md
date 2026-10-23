@@ -397,14 +397,26 @@ Verified by regenerating the three frames the cloud sent, byte-for-byte includin
 the CRC, then by building one for a setpoint the cloud never sent:
 `BD 40 08 0B 06 33 AB E2` is 125 °F.
 
-**Block 26/0 — the BLE map's mode register — does not work here.** Tested with
-`frame.py --mode electric` → `BD 40 07 1A 00 20 B2`: the module **acknowledged**
-it (the `setBlockParameter` ack post) and then carried on in heat-pump mode —
-`b[3]` 30/31 still `0/5`, air still 47 °F at the evaporator exhaust. The cloud
-channel accepts the frame, acks it, and ignores it. The cloud's register map is
-not the BLE map; the setpoint already proved that (11/6 here, 13/2 there), and
-mode is the second case. The mode register the *cloud* uses is still uncaptured —
-the way to get it is a passthrough window while a mode change is made in the app.
+**The mode register, captured.** Block 26/0 (the BLE map's MODE) is acknowledged
+and ignored over the cloud — measured twice. The real register came from watching
+Ayla deliver actual mode commands (written through A.O. Smith's GraphQL,
+`mutation updateMode`, while a passthrough relay was armed):
+
+| mode | frame | register |
+|---|---|---|
+| electric | `BD 40 08 0B 0F 64 01 34` | block 11 **offset 15**, bytes `64 01` |
+| heat_pump | `BD 40 08 0B 0F 00 05 4A` | block 11 **offset 15**, bytes `00 05` |
+
+Block 11 is the control block: offset 6 is the setpoint, offset 15 the mode — and
+the mode bytes are exactly the `b[3]` 30/31 pair the telemetry reports, so the
+read field and the write register are the same two bytes. hybrid's pair is still
+uncaptured.
+
+**Mode control is local, then, and proven end to end.** With `frame.py --mode
+electric` served through the relay on a poll, the appliance switched to electric
+within seconds — telemetry `100/1`, exhaust air 46.9 → 76.8 °F, compressor off —
+and `--mode heat_pump` restores it. No cloud account involved: a TLS endpoint,
+a frame, and a poll to ride.
 
 **That frame was then served to the module, and it obeyed.** With a response rule
 answering `commands.xml`, the device acknowledged the write and its next three

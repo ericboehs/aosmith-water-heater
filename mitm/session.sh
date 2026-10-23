@@ -30,6 +30,7 @@
 #   ./mitm/session.sh 12 122 121 120         # three cloud writes, one flow log
 #   INJECT="148 150" ./mitm/session.sh 12    # serve our own frames on each poll
 #   INJECT="26:0:20" ./mitm/session.sh 12    # block 26 offset 0 = 0x20 (MODE=ELECTRIC)
+#   INJECT_LIVE="0x0B:0x0F:6401" ./mitm/session.sh 12   # cloud-preserving injection (see README)
 #   OPS=1 RESTORE=150 ./mitm/session.sh 10   # also capture the encrypted ops channel
 #   RULES=mitm/rules-set125.json ./mitm/session.sh 5 121   # hand-written rule file
 #
@@ -142,18 +143,28 @@ trap cleanup EXIT INT TERM
 [ -n "${HOME_ASSISTANT_TOKEN:-}" ] && HA_TOKEN_SET=1
 START=$(date +%s)
 if [ -n "$INJECT_LIVE" ]; then
-  python3 - "$INJECT_LIVE" "$TRIGGER" "$PREFER" <<'PYI'
+  # A failed build must abort the session, not arm a stale frame: the builder once
+  # died on a bad spec string and the window ran on yesterday's leftovers.
+  if ! python3 - "$INJECT_LIVE" "$TRIGGER" "$PREFER" <<'PYI'
 import importlib.util, json, pathlib, sys
 spec = importlib.util.spec_from_file_location("frame", "mitm/frame.py")
 frame = importlib.util.module_from_spec(spec); spec.loader.exec_module(frame)
 b, o, hexv = sys.argv[1].split(":")
-wire = frame.encode(int(b, 0), int(o, 0), bytes.fromhex(hexv)).hex(" ").upper()
+# block/offset are decimal ("26:0:20") or 0x-prefixed hex ("0x0B:0x0F:6401").
+# int(x, 0) rejects bare hex like "0F" -- which once crashed this builder silently
+# and left a STALE frame file armed, so the window served yesterday's command.
+block_n, offset_n = int(b, 0), int(o, 0)
+wire = frame.encode(block_n, offset_n, bytes.fromhex(hexv)).hex(" ").upper()
 pathlib.Path("/tmp/session-live.json").write_text(json.dumps(
     [{"match": {"path_regex": "commands\\.xml"},
       "inject": {"file": sys.argv[2], "prefer": sys.argv[3]}}], indent=2) + "\n")
 pathlib.Path("/tmp/session-live-frame.xml").write_text(frame.commands_xml(wire))
-print(f"  live injection: block {int(b,0)} offset {int(o,0)} <- {hexv}  ({wire})")
+print(f"  live injection: block {block_n} offset {offset_n} <- {hexv}  ({wire})")
 PYI
+  then
+    say "FATAL: INJECT_LIVE spec '$INJECT_LIVE' failed to build (decimal or 0x-hex block/offset, hex payload)"
+    exit 1
+  fi
   RULES=/tmp/session-live.json
   : > "$TRIGGER"
 fi
