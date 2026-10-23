@@ -424,6 +424,13 @@ registers either.
 
 ### Ayla LAN mode: real protocol, wrong owner
 
+> **Update (phase 28): this section's conclusion is overturned.** LAN mode was
+> armed without any OEM key: the relay answers the module's own
+> `GET /devices/<key>/lan.json` with a locally generated key, and the module
+> then accepts local registration and encrypted LAN writes. See
+> [ARCHITECTURE.md](../ARCHITECTURE.md) item 12. The *BLE* dead end stands;
+> the "no amount of local poking opens it" line below does not.
+
 Once provisioned the module sits on the LAN and answers HTTP. `portscan2.py`
 found **exactly one open TCP port, 80**, and it serves:
 

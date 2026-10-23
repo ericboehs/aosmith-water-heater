@@ -336,7 +336,27 @@ for connection priority); the thing that arms a unit's LAN server is a
 cloud-assigned `lanip_key`, and A.O. Smith's template has LAN off. Cross-referenced
 against the FGLair LAN-mode capture notes, the remaining lever is injecting a key
 of our own with guessed field names — poor odds. Evidence and the full story:
-captures INDEX, **phase 27**.
+captures INDEX, **phase 27**. **Partially retracted by 12 below:** the flags
+are real and the key does not have to come from Ayla.
+
+**12 — The local doorbell, proven (and two claims retracted).** Ayla's own
+device-agent source (`libada/client.c` in the `ddkity/Roomba1.4.3` dump, same
+agent family) shows what the registration doc does *not*: there is no XML field
+for LAN key material, so guessing field names was always futile. Instead, an
+agent whose `<lan-enabled>` is true issues **`GET /devices/<key>/lan.json`** on
+its cloud connection — to the relay — and accepts whatever key the answer
+carries. The "cloud-assigned key" claim was therefore wrong too: the agent
+trusts its configured cloud, and the relay *is* that cloud. With the relay
+answering `lan.json` using a locally generated key (memory only), the module
+armed its LAN server: `local_reg.json` 404 → **202**, an encrypted
+`key_exchange` (KDF/framing per libada, cross-checked against `deiger/AirCon`),
+and — with the app's `notify:1` heartbeat — **a 10-second local command poll**.
+A setpoint write (140 °F, the standard golden frame) delivered in that poll was
+acked (`ack_status: 200`) and confirmed in decrypted LAN telemetry
+(`setpoint 140.0`) **six seconds later, with no A.O. Smith request involved**.
+Cloud telemetry and the app kept working in parallel. Full sequence and
+evidence: captures INDEX, **phase 28**. This replaces the cloud doorbell with
+something better: local writes *and* local telemetry, cloud preserved.
 
 ## The method (what made the map trustworthy)
 
@@ -364,5 +384,5 @@ captures INDEX, **phase 27**.
 | What triggers a poll at all? | write latency; nothing found yet that provokes one |
 | Where does the app's hot-water % come from? | a read-only plugin ships without it |
 | Can BLE pairing be satisfied by anyone but the OEM account? | the only instant write path |
-| Do any field names carry a `lanip_key` in the registration doc? | the LAN doorbell: guessed names so far, no public schema |
+| Do any field names carry a `lanip_key` in the registration doc? | ~~the LAN doorbell~~ **answered in 12: none — the agent fetches `lan.json` from its cloud, i.e. the relay** |
 | What makes the module's backoff end? | recovery time after every cloud outage |
