@@ -397,6 +397,15 @@ Verified by regenerating the three frames the cloud sent, byte-for-byte includin
 the CRC, then by building one for a setpoint the cloud never sent:
 `BD 40 08 0B 06 33 AB E2` is 125 °F.
 
+**Block 26/0 — the BLE map's mode register — does not work here.** Tested with
+`frame.py --mode electric` → `BD 40 07 1A 00 20 B2`: the module **acknowledged**
+it (the `setBlockParameter` ack post) and then carried on in heat-pump mode —
+`b[3]` 30/31 still `0/5`, air still 47 °F at the evaporator exhaust. The cloud
+channel accepts the frame, acks it, and ignores it. The cloud's register map is
+not the BLE map; the setpoint already proved that (11/6 here, 13/2 there), and
+mode is the second case. The mode register the *cloud* uses is still uncaptured —
+the way to get it is a passthrough window while a mode change is made in the app.
+
 **That frame was then served to the module, and it obeyed.** With a response rule
 answering `commands.xml`, the device acknowledged the write and its next three
 telemetry posts reported `0x33AB` = 125.00 °F — a value Ayla never sent. Writing

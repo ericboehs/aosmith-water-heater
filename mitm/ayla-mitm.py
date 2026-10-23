@@ -198,9 +198,12 @@ class AylaMITM:
 
     def response(self, flow: http.HTTPFlow) -> None:
         self.count += 1
+        # inject first, then log: the flow log must record what the module actually
+        # received, not Ayla's pre-injection reply. Logging in the other order made
+        # an injected poll look empty in the log and cost a morning of confusion.
+        self._inject(flow)
         self._print(flow)
         self._log(flow)
-        self._inject(flow)
 
     def _inject(self, flow: http.HTTPFlow) -> None:
         """Rewrite an upstream reply with a frame of ours, keeping the round trip.

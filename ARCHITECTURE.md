@@ -160,9 +160,18 @@ Measured, one variable per window:
   holding polls open, cloud writes — none produced a dial or a poll while it was
   idle. Backoff after broken connections is measured in many minutes, and only
   time cleared it.
-- **Re-registration**: after a day of broken connections the module fetched
+- **Re-registration and recovery**: after a day of broken connections the module fetched
   `GET /dsns/<DSN>/regtoken.xml` on its next dial — the first time that path has
   appeared. It re-provisions itself before returning to the normal conversation.
+  Measured overnight: re-registration at arm, then **26.6 minutes of silence**,
+  then telemetry resumed at its ~60 s cadence. That 26.6 minutes is the recovery
+  number — the module's backoff after its connections are broken.
+- **Polls only on notification**: five overnight telemetry posts, zero polls —
+  and the morning's queued 140 °F landed on the first poll after disarm, seconds
+  after real Ayla became reachable. The module does not poll on any schedule;
+  a poll happens when Ayla says a command exists. Every successful injection in
+  this repo rode a poll that existed for another reason, which is the central
+  constraint on the local write path.
 - **Conntrack**: arming a DNAT does nothing to an established connection — the
   module keeps using its live one to real Ayla until `conntrack -D` breaks it
   (six armed minutes with zero requests proved this before it was fixed).
@@ -310,7 +319,7 @@ normal. Local-first, cloud-preserving, degrade-gracefully: [PLUGIN.md](PLUGIN.md
 
 | Question | Why it matters |
 |---|---|
-| Does the cloud honour block 26/0 (mode) as the BLE map claims? | mode control over the cloud channel; untested for lack of a delivery slot |
+| Which register does a *real* mode command write? | block 26/0 (the BLE map's mode register) is acked and **ignored** over the cloud channel — tested; the cloud's mode register is uncaptured |
 | What triggers a poll at all? | write latency; nothing found yet that provokes one |
 | Where does the app's hot-water % come from? | a read-only plugin ships without it |
 | Can BLE pairing be satisfied by anyone but the OEM account? | the only instant write path |
