@@ -325,6 +325,19 @@ armed.
 module holding a long backoff — that is the environment the plugin must treat as
 normal. Local-first, cloud-preserving, degrade-gracefully: [PLUGIN.md](PLUGIN.md).
 
+**11 — The DSN flags are metadata (the LAN-mode experiment).** With the relay
+rewriting the module's registration reply — exactly two booleans flipped,
+`lan-enabled` and `local-access-enabled`, everything else byte-identical — the
+module swallowed the config whole and kept operating. It changed nothing on the
+device: `regtoken.json` still says `registered: 0`, `/local_reg.json` still
+404s, no new ports, and the agent never asked for key material afterward. The
+flags are what the *app* reads (`devices.json` carries the same `lan_enabled`
+for connection priority); the thing that arms a unit's LAN server is a
+cloud-assigned `lanip_key`, and A.O. Smith's template has LAN off. Cross-referenced
+against the FGLair LAN-mode capture notes, the remaining lever is injecting a key
+of our own with guessed field names — poor odds. Evidence and the full story:
+captures INDEX, **phase 27**.
+
 ## The method (what made the map trustworthy)
 
 - **One variable per window.** Every claim above is a diff between two windows that
@@ -351,4 +364,5 @@ normal. Local-first, cloud-preserving, degrade-gracefully: [PLUGIN.md](PLUGIN.md
 | What triggers a poll at all? | write latency; nothing found yet that provokes one |
 | Where does the app's hot-water % come from? | a read-only plugin ships without it |
 | Can BLE pairing be satisfied by anyone but the OEM account? | the only instant write path |
+| Do any field names carry a `lanip_key` in the registration doc? | the LAN doorbell: guessed names so far, no public schema |
 | What makes the module's backoff end? | recovery time after every cloud outage |
