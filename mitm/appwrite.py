@@ -34,10 +34,15 @@ DSN = "AC000W019949045"
 
 
 async def run(args: argparse.Namespace) -> int:
+    # Credentials arrive on stdin (email line, then password). With a TTY the
+    # password is hidden by getpass; without one getpass reads stdin, so the
+    # script can be driven from a pipe with nothing on the command line.
     email = args.email or input("A.O. Smith app email: ")
     password = getpass.getpass("A.O. Smith app password: ")
 
-    async with AOSmithAPIClient(email, password) as client:
+    # AOSmithAPIClient is not a context manager; it has an async close().
+    client = AOSmithAPIClient(email, password)
+    try:
         devices = await client.get_devices()
         ours = next((d for d in devices if d.dsn == DSN), None)
         if ours is None:
@@ -47,7 +52,7 @@ async def run(args: argparse.Namespace) -> int:
             return 1
 
         print(f"  device: {ours.name}  dsn={ours.dsn}")
-        print(f"  online: {ours.status.is_online}  mode: {ours.status.mode}"
+        print(f"  online: {ours.status.is_online}  mode: {ours.status.current_mode.value}"
               f"  setpoint: {ours.status.temperature_setpoint} F")
 
         if args.list:
@@ -60,21 +65,23 @@ async def run(args: argparse.Namespace) -> int:
             await client.update_setpoint(ours.junction_id, args.setpoint)
             print(f"  updateSetpoint accepted — watch the relay for the frame")
 
-        if args.mode:
-            mode = OperationMode(args.mode)
+        for m in args.mode or []:
+            mode = OperationMode(m)
             print(f"  writing mode {mode.value} ...")
             await client.update_mode(ours.junction_id, mode)
-            print(f"  updateMode accepted — watch the relay for the frame")
+            print(f"  updateMode accepted ({mode.value}) — watch the relay for the frame")
 
         return 0
+    finally:
+        await client.close()
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="write through A.O. Smith's GraphQL API")
     ap.add_argument("--email", help="app account email (prompted if omitted)")
     ap.add_argument("--list", action="store_true", help="list devices and modes, write nothing")
-    ap.add_argument("--mode", choices=[m.value for m in OperationMode],
-                    help="operation mode to write")
+    ap.add_argument("--mode", choices=[m.value for m in OperationMode], action="append",
+                    help="operation mode to write; repeat for a sequence (electric then heat_pump)")
     ap.add_argument("--setpoint", type=int, help="setpoint in F to write")
     args = ap.parse_args()
     if not (args.list or args.mode or args.setpoint):
