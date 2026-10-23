@@ -92,11 +92,17 @@ shape gives it away. The relay can watch for all of these:
 
 | Symptom | Healthy | Degraded |
 |---|---|---|
-| requests per dial | 2+ (telemetry, poll) | exactly 1 telemetry POST |
+| requests per dial | 2+ (telemetry, poll) | exactly 1 telemetry POST — **also true of a healthy idle module** (measured) |
 | connection duration | holds while active | ~26 s, every dial |
-| polls while heating | frequent | none |
+| polls while heating | frequent | none — **but a healthy idle module also never polls** |
 | ops keepalives (UDP) | ~every 80 s | absent |
 | GraphQL writes | accepted | "an error occurred while attempting to communicate with your water heater" |
+
+Two of these rows were later found to describe a healthy idle module as well (phase 24
+in the capture index), so a relay watching only HTTPS **cannot** diagnose this state
+from request shape. The reliable discriminators are the ops keepalives stopping — not
+visible from the traffic path — and the app's own error message. Design the plugin to
+say "cannot tell" rather than to guess.
 
 In that state injections starve silently — the response is to **stop queueing,
 alert, and wait or escalate**. Time sometimes cures it (measured once: 26.6 min);
