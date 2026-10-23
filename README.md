@@ -222,7 +222,12 @@ that makes the contention failure impossible to hit again.
 
 ## Layout
 
+The whole system — all five interfaces, the cloud protocol, and how it was
+mapped — is documented in [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ```
+ARCHITECTURE.md          the system end to end, and how we learned it
+PLUGIN.md               forward plan: local plugin that keeps the cloud working
 mqtt/cta2045.py           protocol: framing, checksum, parsing, Tank helpers
 mqtt/cta2045_mqtt.py      the daemon: poll → MQTT with HA discovery
 systemd/cta2045-mqtt.service
