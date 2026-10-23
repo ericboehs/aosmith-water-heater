@@ -160,6 +160,16 @@ Measured, one variable per window:
   holding polls open, cloud writes — none produced a dial or a poll while it was
   idle. Backoff after broken connections is measured in many minutes, and only
   time cleared it.
+- **Degraded state**: enough broken connections and the module stops listening —
+  dials every ~4 min for a single telemetry POST, 26-second connections, no polls,
+  no long-poll fallback, and A.O. Smith's GraphQL fails every write with "an error
+  occurred while attempting to communicate with your water heater" (its generic
+  queued-but-never-acknowledged). The cure is un-intercepted time on real Ayla.
+- **Single-seat sessions**: the A.O. Smith account allows one active session. HA's
+  integration keeps re-taking it — the mobile app gets logged out immediately, and
+  a direct script's write got 401 twice, including after a fresh login, while its
+  own login+read had just succeeded. A local plugin that uses the account must
+  expect this fight; the relay design never needs the account at all.
 - **Re-registration and recovery**: after a day of broken connections the module fetched
   `GET /dsns/<DSN>/regtoken.xml` on its next dial — the first time that path has
   appeared. It re-provisions itself before returning to the normal conversation.

@@ -352,6 +352,32 @@ stops seeing the device and Home Assistant flips `water_heater.garage` to
   session. A trigger is still worth doing — it leaves a real command queued for the
   moment the session ends — but it will not appear in the capture.
 
+## The module can be knocked into a degraded state — and its cure is time
+
+A day of armed/disarmed cycles with `conntrack` flushes can leave the module in a
+state where it dials real Ayla or the proxy every ~4 minutes, sends **exactly one
+telemetry POST**, waits 26 seconds, and disconnects — no polls, no
+`commands.xml?polling=1` fallback, no ops keepalives observed. In that state
+**every cloud write fails**: A.O. Smith's GraphQL answers
+
+> an error occurred while attempting to communicate with your water heater.
+> Please restart your device and try again.
+
+which is their generic "we queued it and the device never acknowledged." The
+notify cannot reach the module, so it never dials to fetch the command, so the
+BFF's synchronous wait times out. Nothing about the *relay* is broken — the module
+has simply stopped listening. The cure measured so far is un-intercepted time on
+real Ayla: the overnight precedent was a re-registration fetch, 26.6 minutes of
+silence, then a healthy ~60 s cadence again.
+
+Practical consequences:
+
+* Verify the module is healthy (a harmless setpoint write returns `true` quickly)
+  **before** arming, or the session observes a funk and every injection starves.
+* `pkill` on `session.sh` can kill it between its own steps and leave the DNAT
+  armed against a dead port — the module then has no cloud at all until the two
+  rules are deleted by hand. Check the rule count after *any* abnormal end.
+
 ## Keeping the cloud alive while intercepting
 
 The way to inject *without* hiding the device from Ayla is to let the poll go
