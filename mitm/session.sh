@@ -63,6 +63,11 @@ INJECT=${INJECT:-}
 INJECT_LIVE=${INJECT_LIVE:-}
 PUSH_AT=${PUSH_AT:-0}
 PREFER=${PREFER:-ayla}   # "ours" serves our frame even when Ayla has a command queued
+# REPUSH re-queues the injected frame every N seconds. A frame is consumed when it is
+# served, and an idle module may not poll for a very long time, so "make sure this value
+# eventually lands" means keeping it queued rather than pushing once. Re-serving an
+# identical setpoint is harmless -- the device treats it as the value it already has.
+REPUSH=${REPUSH:-0}
 TRIGGER=${TRIGGER:-/tmp/ayla-cmd.txt}
 RULES=${RULES:-mitm/rules-none.json}
 
@@ -220,8 +225,20 @@ done
 
 # With a live injection, drop the frame into the trigger file after PUSH_AT seconds.
 # It is served on the next poll Ayla answers without a command of its own.
-if [ -n "$INJECT_LIVE" ] && [ "$PUSH_AT" -gt 0 ]; then
-  ( sleep "$PUSH_AT"; cp /tmp/session-live-frame.xml "$TRIGGER"; say "pushed injection -> $TRIGGER" ) &
+if [ -n "$INJECT_LIVE" ]; then
+  if [ "$PUSH_AT" -gt 0 ]; then
+    ( sleep "$PUSH_AT"; cp /tmp/session-live-frame.xml "$TRIGGER"; say "pushed injection -> $TRIGGER" ) &
+  fi
+  if [ "$REPUSH" -gt 0 ]; then
+    (
+      while :; do
+        sleep "$REPUSH"
+        pgrep -f "session.sh" >/dev/null || break
+        [ -s "$TRIGGER" ] || { cp /tmp/session-live-frame.xml "$TRIGGER" 2>/dev/null; say "re-queued injection"; }
+      done
+    ) &
+    say "re-queueing the frame every ${REPUSH}s while the window is open"
+  fi
 fi
 
 # Cloud writes, spaced so each has time to reach the module and be acknowledged in
