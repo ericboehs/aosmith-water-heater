@@ -358,6 +358,21 @@ Cloud telemetry and the app kept working in parallel. Full sequence and
 evidence: captures INDEX, **phase 28**. This replaces the cloud doorbell with
 something better: local writes *and* local telemetry, cloud preserved.
 
+**13 — Recovery and fresh telemetry are protocol features too.** A module with
+a foreign stored LAN key does not fetch `lan.json` again, and neither tested
+Wi-Fi reset clears it. Ayla's own reverse-REST `PUT lanip.json` rotates and
+saves the key; the relay now detects the failed-exchange signature and pushes
+its key automatically. For telemetry on demand, encrypted LAN reverse-REST
+`GET property.json?name=superBlockDyn1` reaches libada's `ada_prop_mgr_get()`
+and returns a fresh MCU value through the normal datapoint endpoint (313 ms
+measured), rather than waiting hours for a spontaneous report. A clean HA →
+LAN 135 °F write was delivered, acked, reported and confirmed in **6.7 s**.
+The same session preserved a useful negative: 138 °F was accepted by A.O.
+Smith's API and delivered through both cloud and LAN, yet remained unapplied;
+cloud 140 °F and local 135 °F worked. That is an appliance rejection, not a
+LAN failure, and one sample does not justify a general temperature-step rule.
+Evidence: captures INDEX, **phase 29**.
+
 ## The method (what made the map trustworthy)
 
 - **One variable per window.** Every claim above is a diff between two windows that
