@@ -367,11 +367,11 @@ its key automatically. For telemetry on demand, encrypted LAN reverse-REST
 and returns a fresh MCU value through the normal datapoint endpoint (313 ms
 measured), rather than waiting hours for a spontaneous report. A clean HA →
 LAN 135 °F write was delivered, acked, reported and confirmed in **6.7 s**.
-The same session preserved a useful negative: 138 °F was accepted by A.O.
-Smith's API and delivered through both cloud and LAN, yet remained unapplied;
-cloud 140 °F and local 135 °F worked. That is an appliance rejection, not a
-LAN failure, and one sample does not justify a general temperature-step rule.
-Evidence: captures INDEX, **phase 29**.
+The same session briefly suggested that 138 °F was a rejected value. **Retracted
+by phase 30:** a sweep of every integer setpoint from 95–150 °F applied all 56
+values, 138 included. The unapplied writes cluster in an hour-long window
+across both paths and several values, so the cause was appliance state, not the
+value. No block-list. Evidence: captures INDEX, **phases 29–30**.
 
 ## The method (what made the map trustworthy)
 
