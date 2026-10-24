@@ -436,7 +436,9 @@ it decode with the same 1/256 °C rule, which ties the two sides together:
 | max setpoint | `block[1]`, offset **86** | `0x418E` = 16782 = 150.0 °F, constant |
 | **water temperature, tank top** | `block[1]`, offset **0** | 129 → 108 °F across six posts while the setpoint never moved — the tank being drawn down |
 | **water temperature, tank bottom** | `block[1]`, offset **4** | 99 → 87 °F over the same posts, riding ~30 °F below the top |
-| hot water available | `block[3]`, offset **30** | 0 while the tank was drawn down, 100 once reheated |
+| ~~hot water available~~ | ~~`block[3]`, offset 30~~ | **Retracted:** that is the mode register (electric `100`). Hot water availability follows the energy-deficit counter at `block[4]` 24–25 (phase 31) |
+| **energy deficit (Wh)** | `block[4]`, offsets **24–25**, 16-bit BE | 5100 → 300 during a 4500 W recovery, at ~76 Wh/min (the element's 75 Wh/min). A.O. Smith's 0/50/100 % follows it: 4950–5100 → 0, 906–4800 → 50, 0–450 → 100 (phase 31) |
+| **water temperature, mid-tank** | `block[1]`, offset **2** | equals top and bottom at rest; 69 → 145 °F during recovery while the top held 146, so it is the last to recover (phase 31) |
 | air at the unit | `block[4]`, offset **30** | 41–48 °F while the heat pump ran, 82–83 °F in electric mode |
 | Wi-Fi RSSI | `block[4]`, offset **40**, signed 16-bit | −51…−55 dBm, matching `?signal=-54` on the polls |
 | device clock | `block[1]`, offsets **70–73**, 32-bit BE Unix time | advanced 4.2 h between two sessions, matching the wall clock |

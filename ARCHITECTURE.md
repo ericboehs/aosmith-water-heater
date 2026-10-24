@@ -149,8 +149,9 @@ evidence in [icomm/README.md](icomm/README.md)):
 | device clock | `b[1]` 70–73, Unix time, local offset |
 | tank physically full of water | `b[3]` 35, 39 (always 100) |
 
-Not found anywhere: the app's "hot water available %" (its 0/50/100 quantised
-figure) and a measured power value. The app's watts are *derived*:
+Found later (phase 31): the app's "hot water available %" (its 0/50/100 quantised
+figure) is A.O. Smith's bucketing of the controller's energy-deficit counter,
+`b[4]` 24–25, in Wh. Still not found: a measured power value. The app's watts are *derived*:
 `4500 × (235/240)² = 4314 W` — its 4315 to within a watt, from a resistive element
 following P ∝ V².
 
