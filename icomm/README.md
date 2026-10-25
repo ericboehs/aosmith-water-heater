@@ -130,9 +130,10 @@ repeatedly: `34.133.156.107`, `104.198.170.253`, `104.154.198.204`,
 side even changes IP mid-session without the module caring — the same client port
 `49154` continued against a new address.
 
-DNS is **hardcoded to 1.1.1.1**, not taken from the gateway, which is why the
-module keeps working when the local resolver is unavailable and also why its
-resolution is interceptable while the Pi is in path.
+~~DNS is **hardcoded to 1.1.1.1**, not taken from the gateway.~~ **Retracted
+2026-10-25 (research phase 40):** the network's DHCP was handing out 1.1.1.1
+and 1.0.0.1. The module uses whatever DNS server DHCP gives it. With DHCP
+pointing at a local AdGuard, it queried AdGuard and followed a rewrite.
 
 ## Phase 3 — DNS interception, and the TLS profile
 
