@@ -228,6 +228,7 @@ mapped — is documented in [ARCHITECTURE.md](ARCHITECTURE.md).
 ```
 ARCHITECTURE.md          the system end to end, and how we learned it
 PLUGIN.md               forward plan: local plugin that keeps the cloud working
+MANUALS.md              A.O. Smith service handbook and Use & Care guide: links and page map
 mqtt/cta2045.py           protocol: framing, checksum, parsing, Tank helpers
 mqtt/cta2045_mqtt.py      the daemon: poll → MQTT with HA discovery
 systemd/cta2045-mqtt.service
